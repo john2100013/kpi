@@ -12,9 +12,9 @@ const authenticateToken = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production');
     
-    // Get user from database
+    // Get user from database (including company_id)
     const result = await query(
-      'SELECT id, name, email, role, payroll_number, department, position FROM users WHERE id = $1',
+      'SELECT id, name, email, role, payroll_number, department, position, company_id FROM users WHERE id = $1',
       [decoded.userId]
     );
 
@@ -23,6 +23,11 @@ const authenticateToken = async (req, res, next) => {
     }
 
     req.user = result.rows[0];
+    
+    // Ensure company_id is set (required for multi-tenancy)
+    if (!req.user.company_id) {
+      return res.status(403).json({ error: 'User must be associated with a company' });
+    }
     next();
   } catch (error) {
     if (error.name === 'JsonWebTokenError') {

@@ -43,6 +43,32 @@ async function setupDatabase() {
     } catch (error) {
       console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
     }
+
+    // Execute migration for multi-tenancy and settings if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_multi_tenancy_and_settings.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running multi-tenancy and settings migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Multi-tenancy and settings migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
+    }
+
+    // Execute migration for Power Automate and email templates if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_power_automate_and_templates.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running Power Automate and email templates migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Power Automate and email templates migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
+    }
     
     // Ask if user wants to seed data
     const readline = require('readline').createInterface({

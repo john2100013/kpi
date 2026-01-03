@@ -57,9 +57,14 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // Generate JWT token
+    // Ensure user has company_id
+    if (!user.company_id) {
+      return res.status(403).json({ error: 'User must be associated with a company' });
+    }
+
+    // Generate JWT token (including company_id for multi-tenancy)
     const token = jwt.sign(
-      { userId: user.id, role: user.role },
+      { userId: user.id, role: user.role, companyId: user.company_id },
       process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production',
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -90,7 +95,7 @@ router.get('/me', async (req, res) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production');
     
     const result = await query(
-      'SELECT id, name, email, role, payroll_number, national_id, department, position, employment_date, manager_id FROM users WHERE id = $1',
+      'SELECT id, name, email, role, payroll_number, national_id, department, position, employment_date, manager_id, company_id FROM users WHERE id = $1',
       [decoded.userId]
     );
 

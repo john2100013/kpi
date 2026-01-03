@@ -18,6 +18,11 @@ app.use('/api/kpis', require('./routes/kpis'));
 app.use('/api/kpi-acknowledgement', require('./routes/kpiAcknowledgement'));
 app.use('/api/kpi-review', require('./routes/kpiReview'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/settings', require('./routes/settings'));
+app.use('/api/departments', require('./routes/departments'));
+app.use('/api/email-templates', require('./routes/emailTemplates'));
+app.use('/api/meetings', require('./routes/meetings'));
+app.use('/api/power-automate', require('./routes/powerAutomate'));
 
 // Health check
 app.get('/api/health', (req, res) => {

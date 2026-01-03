@@ -1,7 +1,7 @@
 const express = require('express');
 const { query } = require('../database/db');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
-const { sendEmail, emailTemplates } = require('../services/emailService');
+const { sendEmailWithFallback, emailTemplates, shouldSendHRNotification, getHREmails } = require('../services/emailService');
 const { generateKPIReviewPDF } = require('../services/pdfService');
 const router = express.Router();
 require('dotenv').config();
@@ -22,9 +22,9 @@ router.get('/', authenticateToken, async (req, res) => {
          JOIN kpis k ON kr.kpi_id = k.id
          JOIN users e ON kr.employee_id = e.id
          JOIN users m ON kr.manager_id = m.id
-         WHERE kr.employee_id = $1
+         WHERE kr.employee_id = $1 AND kr.company_id = $2
          ORDER BY kr.created_at DESC`,
-        [req.user.id]
+        [req.user.id, req.user.company_id]
       );
     } else if (req.user.role === 'manager') {
       result = await query(
@@ -36,12 +36,12 @@ router.get('/', authenticateToken, async (req, res) => {
          JOIN kpis k ON kr.kpi_id = k.id
          JOIN users e ON kr.employee_id = e.id
          JOIN users m ON kr.manager_id = m.id
-         WHERE kr.manager_id = $1
+         WHERE kr.manager_id = $1 AND kr.company_id = $2
          ORDER BY kr.created_at DESC`,
-        [req.user.id]
+        [req.user.id, req.user.company_id]
       );
     } else {
-      // HR sees all
+      // HR sees all in their company
       result = await query(
         `SELECT kr.*, k.title as kpi_title, k.description as kpi_description,
          k.target_value, k.measure_unit,
@@ -50,7 +50,9 @@ router.get('/', authenticateToken, async (req, res) => {
          JOIN kpis k ON kr.kpi_id = k.id
          JOIN users e ON kr.employee_id = e.id
          JOIN users m ON kr.manager_id = m.id
-         ORDER BY kr.created_at DESC`
+         WHERE kr.company_id = $1
+         ORDER BY kr.created_at DESC`,
+        [req.user.company_id]
       );
     }
 
@@ -75,8 +77,8 @@ router.get('/:id', authenticateToken, async (req, res) => {
        JOIN kpis k ON kr.kpi_id = k.id
        JOIN users e ON kr.employee_id = e.id
        JOIN users m ON kr.manager_id = m.id
-       WHERE kr.id = $1`,
-      [id]
+       WHERE kr.id = $1 AND kr.company_id = $2`,
+      [id, req.user.company_id]
     );
 
     if (result.rows.length === 0) {
@@ -208,14 +210,15 @@ router.post('/:kpiId/self-rating', authenticateToken, async (req, res) => {
       // Create new review
       const insertResult = await query(
         `INSERT INTO kpi_reviews (
-          kpi_id, employee_id, manager_id, review_period, review_quarter, review_year,
+          kpi_id, employee_id, manager_id, company_id, review_period, review_quarter, review_year,
           employee_rating, employee_comment, employee_signature, employee_signed_at, review_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), 'employee_submitted')
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), 'employee_submitted')
         RETURNING *`,
         [
           kpiId,
           req.user.id,
           kpi.manager_id,
+          req.user.company_id,
           review_period || kpi.period,
           review_quarter || kpi.quarter,
           review_year || kpi.year,
@@ -240,23 +243,74 @@ router.post('/:kpiId/self-rating', authenticateToken, async (req, res) => {
 
     // Send email notification to manager
     const link = `${FRONTEND_URL}/manager/kpi-review/${review.id}`;
-    await sendEmail(
+    const emailHtml = emailTemplates.selfRatingSubmitted(kpi.manager_name, kpi.employee_name, link);
+    
+    await sendEmailWithFallback(
+      req.user.company_id,
       kpi.manager_email,
       'Self-Rating Submitted',
-      emailTemplates.selfRatingSubmitted(kpi.manager_name, kpi.employee_name, link)
+      emailHtml,
+      '',
+      'self_rating_submitted',
+      {
+        managerName: kpi.manager_name,
+        employeeName: kpi.employee_name,
+        link: link,
+      }
     );
+
+    // Send email to HR if enabled
+    const hrShouldReceive = await shouldSendHRNotification(req.user.company_id);
+    if (hrShouldReceive) {
+      const hrEmails = await getHREmails(req.user.company_id);
+      for (const hrEmail of hrEmails) {
+        await sendEmailWithFallback(
+          req.user.company_id,
+          hrEmail,
+          'Self-Rating Submitted',
+          emailHtml,
+          '',
+          'self_rating_submitted',
+          {
+            managerName: kpi.manager_name,
+            employeeName: kpi.employee_name,
+            link: `${FRONTEND_URL}/hr/kpi-details/${kpiId}`,
+          }
+        );
+      }
+    }
 
     // Create in-app notification for manager
     await query(
-      `INSERT INTO notifications (recipient_id, message, type, related_review_id)
-       VALUES ($1, $2, $3, $4)`,
+      `INSERT INTO notifications (recipient_id, message, type, related_review_id, company_id)
+       VALUES ($1, $2, $3, $4, $5)`,
       [
         kpi.manager_id,
         `${kpi.employee_name} has submitted self-rating for KPI review`,
         'self_rating_submitted',
         review.id,
+        req.user.company_id,
       ]
     );
+
+    // Create in-app notification for HR
+    const hrUsers = await query(
+      "SELECT id FROM users WHERE role = 'hr' AND company_id = $1",
+      [req.user.company_id]
+    );
+    for (const hr of hrUsers.rows) {
+      await query(
+        `INSERT INTO notifications (recipient_id, message, type, related_review_id, company_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          hr.id,
+          `${kpi.employee_name} has submitted self-rating for KPI review`,
+          'self_rating_submitted',
+          review.id,
+          req.user.company_id,
+        ]
+      );
+    }
 
     res.json({ review });
   } catch (error) {
@@ -353,30 +407,32 @@ router.post('/:reviewId/manager-review', authenticateToken, authorizeRoles('mana
         emailTemplates.reviewCompleted(review.employee_name, review.manager_name, link)
       );
 
-      // Notify HR
-      const hrUsers = await query("SELECT id, email FROM users WHERE role = 'hr'");
+      // Notify HR in the same company
+      const hrUsers = await query("SELECT id, email FROM users WHERE role = 'hr' AND company_id = $1", [req.user.company_id]);
       for (const hr of hrUsers.rows) {
         await query(
-          `INSERT INTO notifications (recipient_id, message, type, related_review_id)
-           VALUES ($1, $2, $3, $4)`,
+          `INSERT INTO notifications (recipient_id, message, type, related_review_id, company_id)
+           VALUES ($1, $2, $3, $4, $5)`,
           [
             hr.id,
             `KPI review completed for ${review.employee_name} by ${review.manager_name}`,
             'review_completed',
             reviewId,
+            req.user.company_id,
           ]
         );
       }
 
       // Create in-app notification for employee
       await query(
-        `INSERT INTO notifications (recipient_id, message, type, related_review_id)
-         VALUES ($1, $2, $3, $4)`,
+        `INSERT INTO notifications (recipient_id, message, type, related_review_id, company_id)
+         VALUES ($1, $2, $3, $4, $5)`,
         [
           review.employee_id,
           `Your manager ${review.manager_name} has completed your KPI review`,
           'review_completed',
           reviewId,
+          req.user.company_id,
         ]
       );
     } catch (pdfError) {

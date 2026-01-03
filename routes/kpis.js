@@ -1,7 +1,7 @@
 const express = require('express');
 const { query } = require('../database/db');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
-const { sendEmail, emailTemplates } = require('../services/emailService');
+const { sendEmailWithFallback, emailTemplates, shouldSendHRNotification, getHREmails } = require('../services/emailService');
 const router = express.Router();
 require('dotenv').config();
 
@@ -20,9 +20,9 @@ router.get('/', authenticateToken, async (req, res) => {
          FROM kpis k
          JOIN users e ON k.employee_id = e.id
          JOIN users m ON k.manager_id = m.id
-         WHERE k.employee_id = $1
+         WHERE k.employee_id = $1 AND k.company_id = $2
          ORDER BY k.created_at DESC`,
-        [req.user.id]
+        [req.user.id, req.user.company_id]
       );
     } else if (req.user.role === 'manager') {
       result = await query(
@@ -32,12 +32,12 @@ router.get('/', authenticateToken, async (req, res) => {
          FROM kpis k
          JOIN users e ON k.employee_id = e.id
          JOIN users m ON k.manager_id = m.id
-         WHERE k.manager_id = $1
+         WHERE k.manager_id = $1 AND k.company_id = $2
          ORDER BY k.created_at DESC`,
-        [req.user.id]
+        [req.user.id, req.user.company_id]
       );
     } else {
-      // HR sees all
+      // HR sees all in their company
       result = await query(
         `SELECT k.*, 
          e.name as employee_name, e.department as employee_department,
@@ -45,7 +45,9 @@ router.get('/', authenticateToken, async (req, res) => {
          FROM kpis k
          JOIN users e ON k.employee_id = e.id
          JOIN users m ON k.manager_id = m.id
-         ORDER BY k.created_at DESC`
+         WHERE k.company_id = $1
+         ORDER BY k.created_at DESC`,
+        [req.user.company_id]
       );
     }
 
@@ -71,6 +73,150 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
+// Get KPIs that are acknowledged but don't have reviews yet (for HR and Manager)
+// NOTE: This route must come before /:id to avoid route conflicts
+router.get('/acknowledged-review-pending', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
+  try {
+    let result;
+    
+    if (req.user.role === 'manager') {
+      // Managers see only their team's KPIs
+      result = await query(
+        `SELECT k.*, 
+         e.name as employee_name, e.department as employee_department,
+         e.payroll_number as employee_payroll_number,
+         m.name as manager_name
+         FROM kpis k
+         JOIN users e ON k.employee_id = e.id
+         JOIN users m ON k.manager_id = m.id
+         LEFT JOIN kpi_reviews kr ON k.id = kr.kpi_id
+         WHERE k.manager_id = $1 
+           AND k.company_id = $2
+           AND k.status = 'acknowledged'
+           AND kr.id IS NULL
+         ORDER BY k.employee_signed_at DESC, k.created_at DESC`,
+        [req.user.id, req.user.company_id]
+      );
+    } else {
+      // HR sees all in their company
+      result = await query(
+        `SELECT k.*, 
+         e.name as employee_name, e.department as employee_department,
+         e.payroll_number as employee_payroll_number,
+         m.name as manager_name
+         FROM kpis k
+         JOIN users e ON k.employee_id = e.id
+         JOIN users m ON k.manager_id = m.id
+         LEFT JOIN kpi_reviews kr ON k.id = kr.kpi_id
+         WHERE k.company_id = $1
+           AND k.status = 'acknowledged'
+           AND kr.id IS NULL
+         ORDER BY k.employee_signed_at DESC, k.created_at DESC`,
+        [req.user.company_id]
+      );
+    }
+
+    // Fetch items for each KPI
+    const kpisWithItems = await Promise.all(
+      result.rows.map(async (kpi) => {
+        const itemsResult = await query(
+          'SELECT * FROM kpi_items WHERE kpi_id = $1 ORDER BY item_order',
+          [kpi.id]
+        );
+        return {
+          ...kpi,
+          items: itemsResult.rows,
+          item_count: itemsResult.rows.length,
+        };
+      })
+    );
+
+    res.json({ kpis: kpisWithItems });
+  } catch (error) {
+    console.error('Get acknowledged-review-pending KPIs error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get KPIs with completed reviews (for HR and Manager)
+// NOTE: This route must come before /:id to avoid route conflicts
+router.get('/review-completed', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
+  try {
+    let result;
+    
+    if (req.user.role === 'manager') {
+      // Managers see only their team's KPIs with completed reviews
+      result = await query(
+        `SELECT k.*, 
+         e.name as employee_name, e.department as employee_department,
+         e.payroll_number as employee_payroll_number,
+         m.name as manager_name,
+         kr.id as review_id,
+         kr.review_status,
+         kr.manager_rating,
+         kr.employee_rating,
+         kr.manager_signed_at,
+         kr.pdf_generated,
+         kr.pdf_path
+         FROM kpis k
+         JOIN users e ON k.employee_id = e.id
+         JOIN users m ON k.manager_id = m.id
+         JOIN kpi_reviews kr ON k.id = kr.kpi_id AND kr.company_id = k.company_id
+         WHERE k.manager_id = $1 
+           AND k.company_id = $2
+           AND (kr.review_status = 'manager_submitted' OR kr.review_status = 'completed')
+         ORDER BY COALESCE(kr.manager_signed_at, kr.updated_at) DESC, kr.updated_at DESC`,
+        [req.user.id, req.user.company_id]
+      );
+    } else {
+      // HR sees all in their company
+      result = await query(
+        `SELECT k.*, 
+         e.name as employee_name, e.department as employee_department,
+         e.payroll_number as employee_payroll_number,
+         m.name as manager_name,
+         kr.id as review_id,
+         kr.review_status,
+         kr.manager_rating,
+         kr.employee_rating,
+         kr.manager_signed_at,
+         kr.pdf_generated,
+         kr.pdf_path
+         FROM kpis k
+         JOIN users e ON k.employee_id = e.id
+         JOIN users m ON k.manager_id = m.id
+         JOIN kpi_reviews kr ON k.id = kr.kpi_id AND kr.company_id = k.company_id
+         WHERE k.company_id = $1
+           AND (kr.review_status = 'manager_submitted' OR kr.review_status = 'completed')
+         ORDER BY COALESCE(kr.manager_signed_at, kr.updated_at) DESC, kr.updated_at DESC`,
+        [req.user.company_id]
+      );
+    }
+
+    // Fetch items for each KPI
+    const kpisWithItems = await Promise.all(
+      result.rows.map(async (kpi) => {
+        const itemsResult = await query(
+          'SELECT * FROM kpi_items WHERE kpi_id = $1 ORDER BY item_order',
+          [kpi.id]
+        );
+        return {
+          ...kpi,
+          items: itemsResult.rows,
+          item_count: itemsResult.rows.length,
+        };
+      })
+    );
+
+    res.json({ kpis: kpisWithItems });
+  } catch (error) {
+    console.error('Get review-completed KPIs error:', error);
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
 // Get KPI by ID
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
@@ -85,8 +231,8 @@ router.get('/:id', authenticateToken, async (req, res) => {
        FROM kpis k
        JOIN users e ON k.employee_id = e.id
        JOIN users m ON k.manager_id = m.id
-       WHERE k.id = $1`,
-      [id]
+       WHERE k.id = $1 AND k.company_id = $2`,
+      [id, req.user.company_id]
     );
 
     if (result.rows.length === 0) {
@@ -146,10 +292,10 @@ router.post('/', authenticateToken, authorizeRoles('manager'), async (req, res) 
       return res.status(400).json({ error: 'Employee ID and period are required' });
     }
 
-    // Verify employee exists and is under this manager
+    // Verify employee exists and is under this manager and same company
     const employeeCheck = await query(
-      'SELECT id, name, email, manager_id FROM users WHERE id = $1 AND role = $2',
-      [employee_id, 'employee']
+      'SELECT id, name, email, manager_id, company_id FROM users WHERE id = $1 AND role = $2 AND company_id = $3',
+      [employee_id, 'employee', req.user.company_id]
     );
 
     if (employeeCheck.rows.length === 0) {
@@ -190,13 +336,14 @@ router.post('/', authenticateToken, authorizeRoles('manager'), async (req, res) 
     // Insert KPI Form (main record)
     const result = await query(
       `INSERT INTO kpis (
-        employee_id, manager_id, title, description, period, quarter, year, 
+        employee_id, manager_id, company_id, title, description, period, quarter, year, 
         meeting_date, manager_signature, manager_signed_at, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), 'pending')
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), 'pending')
       RETURNING *`,
       [
         employee_id,
         req.user.id,
+        req.user.company_id,
         formTitle,
         `KPI Form with ${itemsToCreate.length} item(s)`,
         period,
@@ -233,9 +380,9 @@ router.post('/', authenticateToken, authorizeRoles('manager'), async (req, res) 
       const reminderTypes = ['2_weeks', '1_week', '3_days', '2_days', '1_day', 'meeting_day'];
       for (const reminderType of reminderTypes) {
         await query(
-          `INSERT INTO kpi_setting_reminders (kpi_id, employee_id, manager_id, meeting_date, reminder_type)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [kpi.id, employee_id, req.user.id, meeting_date, reminderType]
+          `INSERT INTO kpi_setting_reminders (kpi_id, employee_id, manager_id, company_id, meeting_date, reminder_type)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [kpi.id, employee_id, req.user.id, req.user.company_id, meeting_date, reminderType]
         );
       }
     }
@@ -243,37 +390,70 @@ router.post('/', authenticateToken, authorizeRoles('manager'), async (req, res) 
     // Send email notification to employee
     const employee = employeeCheck.rows[0];
     const link = `${FRONTEND_URL}/employee/kpi-acknowledgement/${kpi.id}`;
-    await sendEmail(
+    const emailHtml = emailTemplates.kpiAssigned(employee.name, req.user.name, link);
+    
+    await sendEmailWithFallback(
+      req.user.company_id,
       employee.email,
       'New KPI Assigned',
-      emailTemplates.kpiAssigned(employee.name, req.user.name, link)
+      emailHtml,
+      '',
+      'kpi_assigned',
+      {
+        employeeName: employee.name,
+        managerName: req.user.name,
+        link: link,
+      }
     );
+
+    // Send email to HR if enabled
+    const hrShouldReceive = await shouldSendHRNotification(req.user.company_id);
+    if (hrShouldReceive) {
+      const hrEmails = await getHREmails(req.user.company_id);
+      for (const hrEmail of hrEmails) {
+        await sendEmailWithFallback(
+          req.user.company_id,
+          hrEmail,
+          'New KPI Assigned',
+          emailHtml,
+          '',
+          'kpi_assigned',
+          {
+            employeeName: employee.name,
+            managerName: req.user.name,
+            link: `${FRONTEND_URL}/hr/kpi-details/${kpi.id}`,
+          }
+        );
+      }
+    }
 
     // Create in-app notification
     await query(
-      `INSERT INTO notifications (recipient_id, message, type, related_kpi_id)
-       VALUES ($1, $2, $3, $4)`,
+      `INSERT INTO notifications (recipient_id, message, type, related_kpi_id, company_id)
+       VALUES ($1, $2, $3, $4, $5)`,
       [
         employee_id,
         `New KPI form with ${itemsToCreate.length} item(s) assigned by ${req.user.name}`,
         'kpi_assigned',
         kpi.id,
+        req.user.company_id,
       ]
     );
 
-    // Notify HR
-    const hrUsers = await query("SELECT id, email FROM users WHERE role = 'hr'");
+    // Notify HR in the same company (in-app notifications)
+    const hrUsers = await query("SELECT id, email FROM users WHERE role = 'hr' AND company_id = $1", [req.user.company_id]);
     for (const hr of hrUsers.rows) {
-      await query(
-        `INSERT INTO notifications (recipient_id, message, type, related_kpi_id)
-         VALUES ($1, $2, $3, $4)`,
-        [
-          hr.id,
-          `New KPI form set for ${employee.name} by ${req.user.name}`,
-          'kpi_set',
-          kpi.id,
-        ]
-      );
+        await query(
+          `INSERT INTO notifications (recipient_id, message, type, related_kpi_id, company_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            hr.id,
+            `New KPI form set for ${employee.name} by ${req.user.name}`,
+            'kpi_set',
+            kpi.id,
+            req.user.company_id,
+          ]
+        );
     }
 
     // Fetch the created KPI with its items
@@ -361,18 +541,18 @@ router.get('/dashboard/stats', authenticateToken, async (req, res) => {
 
     if (req.user.role === 'manager') {
       const totalEmployees = await query(
-        'SELECT COUNT(*) FROM users WHERE manager_id = $1',
-        [req.user.id]
+        'SELECT COUNT(*) FROM users WHERE manager_id = $1 AND company_id = $2',
+        [req.user.id, req.user.company_id]
       );
 
       const pendingKPIs = await query(
-        "SELECT COUNT(*) FROM kpis WHERE manager_id = $1 AND status = 'pending'",
-        [req.user.id]
+        "SELECT COUNT(*) FROM kpis WHERE manager_id = $1 AND company_id = $2 AND status = 'pending'",
+        [req.user.id, req.user.company_id]
       );
 
       const completedKPIs = await query(
-        "SELECT COUNT(*) FROM kpis WHERE manager_id = $1 AND status = 'completed'",
-        [req.user.id]
+        "SELECT COUNT(*) FROM kpis WHERE manager_id = $1 AND company_id = $2 AND status = 'completed'",
+        [req.user.id, req.user.company_id]
       );
 
       stats = {
@@ -382,18 +562,18 @@ router.get('/dashboard/stats', authenticateToken, async (req, res) => {
       };
     } else if (req.user.role === 'employee') {
       const myKPIs = await query(
-        'SELECT COUNT(*) FROM kpis WHERE employee_id = $1',
-        [req.user.id]
+        'SELECT COUNT(*) FROM kpis WHERE employee_id = $1 AND company_id = $2',
+        [req.user.id, req.user.company_id]
       );
 
       const pendingKPIs = await query(
-        "SELECT COUNT(*) FROM kpis WHERE employee_id = $1 AND status = 'pending'",
-        [req.user.id]
+        "SELECT COUNT(*) FROM kpis WHERE employee_id = $1 AND company_id = $2 AND status = 'pending'",
+        [req.user.id, req.user.company_id]
       );
 
       const completedKPIs = await query(
-        "SELECT COUNT(*) FROM kpis WHERE employee_id = $1 AND status = 'completed'",
-        [req.user.id]
+        "SELECT COUNT(*) FROM kpis WHERE employee_id = $1 AND company_id = $2 AND status = 'completed'",
+        [req.user.id, req.user.company_id]
       );
 
       stats = {

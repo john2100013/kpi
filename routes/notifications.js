@@ -23,11 +23,11 @@ router.get('/', authenticateToken, async (req, res) => {
        LEFT JOIN kpi_reviews kr ON n.related_review_id = kr.id
        LEFT JOIN users e ON k.employee_id = e.id
        LEFT JOIN users m ON k.manager_id = m.id
-       WHERE n.recipient_id = $1
+       WHERE n.recipient_id = $1 AND (n.company_id = $2 OR n.company_id IS NULL)
     `;
 
-    const params = [req.user.id];
-    let paramIndex = 2;
+    const params = [req.user.id, req.user.company_id];
+    let paramIndex = 3; // Start at 3 since $1 and $2 are already used
 
     if (read !== undefined) {
       queryText += ` AND n.read = $${paramIndex}`;
@@ -56,8 +56,9 @@ router.get('/', authenticateToken, async (req, res) => {
 // Get recent activity (last 10 notifications)
 router.get('/activity', authenticateToken, async (req, res) => {
   try {
-    const result = await query(
-      `SELECT n.*, 
+    // For HR, show all activity in their company; for others, show only their own
+    let queryText = `
+      SELECT n.*, 
        k.title as kpi_title,
        k.quarter as kpi_quarter,
        k.year as kpi_year,
@@ -67,11 +68,20 @@ router.get('/activity', authenticateToken, async (req, res) => {
        LEFT JOIN kpis k ON n.related_kpi_id = k.id
        LEFT JOIN users e ON k.employee_id = e.id
        LEFT JOIN users m ON k.manager_id = m.id
-       WHERE n.recipient_id = $1
-       ORDER BY n.created_at DESC
-       LIMIT 10`,
-      [req.user.id]
-    );
+       WHERE (n.company_id = $1 OR n.company_id IS NULL)
+    `;
+    
+    const params = [req.user.company_id];
+    
+    // For non-HR users, also filter by recipient
+    if (req.user.role !== 'hr') {
+      queryText += ` AND n.recipient_id = $2`;
+      params.push(req.user.id);
+    }
+    
+    queryText += ` ORDER BY n.created_at DESC LIMIT 10`;
+
+    const result = await query(queryText, params);
 
     res.json({ activities: result.rows });
   } catch (error) {
@@ -105,8 +115,8 @@ router.patch('/:id/read', authenticateToken, async (req, res) => {
 router.patch('/read-all', authenticateToken, async (req, res) => {
   try {
     await query(
-      'UPDATE notifications SET read = true WHERE recipient_id = $1 AND read = false',
-      [req.user.id]
+      'UPDATE notifications SET read = true WHERE recipient_id = $1 AND (company_id = $2 OR company_id IS NULL) AND read = false',
+      [req.user.id, req.user.company_id]
     );
 
     res.json({ message: 'All notifications marked as read' });
@@ -120,8 +130,8 @@ router.patch('/read-all', authenticateToken, async (req, res) => {
 router.get('/unread/count', authenticateToken, async (req, res) => {
   try {
     const result = await query(
-      'SELECT COUNT(*) FROM notifications WHERE recipient_id = $1 AND read = false',
-      [req.user.id]
+      'SELECT COUNT(*) FROM notifications WHERE recipient_id = $1 AND (company_id = $2 OR company_id IS NULL) AND read = false',
+      [req.user.id, req.user.company_id]
     );
 
     res.json({ count: parseInt(result.rows[0].count) });

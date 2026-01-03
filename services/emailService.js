@@ -1,4 +1,6 @@
 const nodemailer = require('nodemailer');
+const { sendTemplatedEmail } = require('./powerAutomateService');
+const { query } = require('../database/db');
 require('dotenv').config();
 
 // Create transporter only if email credentials are provided
@@ -19,17 +21,84 @@ if (emailEnabled) {
   // Verify connection (non-blocking)
   transporter.verify((error, success) => {
     if (error) {
-      console.log('⚠️  Email service not configured properly:', error.message);
-      console.log('   Email notifications will be disabled. Configure EMAIL_USER and EMAIL_PASS in .env to enable.');
+      console.log('⚠️  SMTP email service not configured properly:', error.message);
+      console.log('   SMTP email notifications will be disabled.');
+      console.log('   Note: You can use Power Automate for emails instead (configure in HR Settings).');
+      transporter = null;
     } else {
-      console.log('✅ Email service ready');
+      console.log('✅ SMTP email service ready');
     }
   });
 } else {
-  console.log('⚠️  Email service disabled - EMAIL_USER and EMAIL_PASS not configured in .env');
-  console.log('   Email notifications will be skipped. Configure email settings to enable.');
+  console.log('ℹ️  SMTP email service not configured in .env');
+  console.log('   Note: You can use Power Automate for emails (configure in HR Settings → Email Templates).');
 }
 
+/**
+ * Send email with fallback: Power Automate → SMTP
+ * @param {number} companyId - Company ID
+ * @param {string} to - Recipient email address
+ * @param {string} subject - Email subject
+ * @param {string} html - Email HTML body
+ * @param {string} text - Email text body (optional)
+ * @param {string} templateType - Template type for Power Automate
+ * @param {Object} variables - Variables for template rendering
+ * @returns {Promise<Object>} Response object with success status
+ */
+const sendEmailWithFallback = async (companyId, to, subject, html, text = '', templateType = null, variables = {}) => {
+  let result = null;
+  let method = 'none';
+
+  // Try Power Automate first (if templateType is provided)
+  if (templateType && companyId) {
+    try {
+      console.log(`📧 Attempting to send email via Power Automate to ${to} (${templateType})`);
+      result = await sendTemplatedEmail(companyId, to, templateType, variables);
+      
+      if (result.success && !result.skipped) {
+        method = 'power-automate';
+        console.log(`✅ Email sent successfully via Power Automate to ${to}`);
+        return { ...result, method: 'power-automate' };
+      } else if (result.skipped) {
+        console.log(`⚠️  Power Automate not configured, falling back to SMTP...`);
+      } else {
+        console.log(`❌ Power Automate failed: ${result.error}, falling back to SMTP...`);
+      }
+    } catch (error) {
+      console.error(`❌ Power Automate error: ${error.message}, falling back to SMTP...`);
+    }
+  }
+
+  // Fallback to SMTP
+  if (emailEnabled && transporter) {
+    try {
+      console.log(`📧 Attempting to send email via SMTP to ${to}`);
+      const mailOptions = {
+        from: process.env.EMAIL_FROM || 'noreply@kpimanager.com',
+        to,
+        subject,
+        text: text || html.replace(/<[^>]*>/g, ''),
+        html,
+      };
+
+      const info = await transporter.sendMail(mailOptions);
+      method = 'smtp';
+      console.log(`✅ Email sent successfully via SMTP to ${to} (MessageID: ${info.messageId})`);
+      return { success: true, messageId: info.messageId, method: 'smtp' };
+    } catch (error) {
+      console.error(`❌ SMTP send error to ${to}:`, error.message);
+      return { success: false, error: error.message, method: 'smtp-failed' };
+    }
+  }
+
+  // No email method available
+  console.log(`⚠️  No email method available. Email not sent to ${to}: ${subject}`);
+  return { success: false, error: 'No email method configured', method: 'none', skipped: true };
+};
+
+/**
+ * Send email (legacy function for backward compatibility)
+ */
 const sendEmail = async (to, subject, html, text = '') => {
   // If email is not configured, just log and return success (don't block the process)
   if (!emailEnabled || !transporter) {
@@ -53,6 +122,45 @@ const sendEmail = async (to, subject, html, text = '') => {
     console.error('❌ Email send error:', error.message);
     // Don't throw - just log the error so it doesn't break the app
     return { success: false, error: error.message, skipped: false };
+  }
+};
+
+/**
+ * Check if HR should receive email notifications
+ */
+const shouldSendHRNotification = async (companyId) => {
+  try {
+    const result = await query(
+      'SELECT receive_email_notifications FROM hr_email_notification_settings WHERE company_id = $1',
+      [companyId]
+    );
+
+    if (result.rows.length === 0) {
+      // Default to true if no setting exists
+      return true;
+    }
+
+    return result.rows[0].receive_email_notifications !== false;
+  } catch (error) {
+    console.error('Error checking HR email notification settings:', error);
+    // Default to true on error
+    return true;
+  }
+};
+
+/**
+ * Get HR email addresses for a company
+ */
+const getHREmails = async (companyId) => {
+  try {
+    const result = await query(
+      'SELECT email FROM users WHERE role = $1 AND company_id = $2 AND email IS NOT NULL',
+      ['hr', companyId]
+    );
+    return result.rows.map(row => row.email);
+  } catch (error) {
+    console.error('Error fetching HR emails:', error);
+    return [];
   }
 };
 
@@ -92,12 +200,13 @@ const emailTemplates = {
     `;
   },
 
-  kpiAcknowledged: (managerName, employeeName) => {
+  kpiAcknowledged: (managerName, employeeName, link) => {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #10b981;">KPI Acknowledged</h2>
         <p>Hello ${managerName},</p>
         <p>${employeeName} has acknowledged the assigned KPIs.</p>
+        <a href="${link}" style="display: inline-block; padding: 12px 24px; background-color: #6366f1; color: white; text-decoration: none; border-radius: 6px; margin-top: 20px;">View KPIs</a>
         <p style="margin-top: 30px; color: #666; font-size: 12px;">This is an automated notification from KPI Manager Performance System.</p>
       </div>
     `;
@@ -141,5 +250,10 @@ const emailTemplates = {
   },
 };
 
-module.exports = { sendEmail, emailTemplates };
-
+module.exports = { 
+  sendEmail, 
+  sendEmailWithFallback,
+  emailTemplates,
+  shouldSendHRNotification,
+  getHREmails,
+};

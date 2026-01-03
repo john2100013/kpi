@@ -9,17 +9,18 @@ router.get('/', authenticateToken, authorizeRoles('manager', 'hr'), async (req, 
     let result;
     
     if (req.user.role === 'manager') {
-      // Managers see only their team
+      // Managers see only their team in their company
       result = await query(
         `SELECT id, name, email, role, payroll_number, department, position, employment_date
-         FROM users WHERE manager_id = $1 OR id = $1 ORDER BY name`,
-        [req.user.id]
+         FROM users WHERE (manager_id = $1 OR id = $1) AND company_id = $2 ORDER BY name`,
+        [req.user.id, req.user.company_id]
       );
     } else {
-      // HR sees all employees
+      // HR sees all employees in their company
       result = await query(
         `SELECT id, name, email, role, payroll_number, department, position, employment_date, manager_id
-         FROM users WHERE role = 'employee' ORDER BY name`
+         FROM users WHERE role = 'employee' AND company_id = $1 ORDER BY name`,
+        [req.user.company_id]
       );
     }
 
@@ -43,8 +44,8 @@ router.get('/:id', authenticateToken, async (req, res) => {
 
     result = await query(
       `SELECT id, name, email, role, payroll_number, national_id, department, position, employment_date, manager_id
-       FROM users WHERE id = $1`,
-      [id]
+       FROM users WHERE id = $1 AND company_id = $2`,
+      [id, req.user.company_id]
     );
 
     if (result.rows.length === 0) {
@@ -65,8 +66,8 @@ router.get('/manager/:managerId', authenticateToken, async (req, res) => {
 
     const result = await query(
       `SELECT id, name, email, role, payroll_number, department, position, employment_date
-       FROM users WHERE manager_id = $1 ORDER BY name`,
-      [managerId]
+       FROM users WHERE manager_id = $1 AND company_id = $2 ORDER BY name`,
+      [managerId, req.user.company_id]
     );
 
     res.json({ employees: result.rows });

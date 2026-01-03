@@ -1,7 +1,7 @@
 const express = require('express');
 const { query } = require('../database/db');
 const { authenticateToken } = require('../middleware/auth');
-const { sendEmail, emailTemplates } = require('../services/emailService');
+const { sendEmailWithFallback, emailTemplates, shouldSendHRNotification, getHREmails } = require('../services/emailService');
 const router = express.Router();
 
 // Acknowledge KPI (Employee)
@@ -21,8 +21,8 @@ router.post('/:kpiId', authenticateToken, async (req, res) => {
        FROM kpis k
        JOIN users e ON k.employee_id = e.id
        JOIN users m ON k.manager_id = m.id
-       WHERE k.id = $1`,
-      [kpiId]
+       WHERE k.id = $1 AND k.company_id = $2`,
+      [kpiId, req.user.company_id]
     );
 
     if (kpiResult.rows.length === 0) {
@@ -47,36 +47,75 @@ router.post('/:kpiId', authenticateToken, async (req, res) => {
 
     const updatedKPI = result.rows[0];
 
+    // Get company_id from KPI (should be available in the query)
+    const kpiCompanyId = kpi.company_id || req.user.company_id;
+    const link = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/manager/kpi-details/${kpiId}`;
+    const emailHtml = emailTemplates.kpiAcknowledged(kpi.manager_name, kpi.employee_name, link);
+
     // Send email notification to manager
-    await sendEmail(
+    await sendEmailWithFallback(
+      kpiCompanyId,
       kpi.manager_email,
       'KPI Acknowledged',
-      emailTemplates.kpiAcknowledged(kpi.manager_name, kpi.employee_name)
+      emailHtml,
+      '',
+      'kpi_acknowledged',
+      {
+        managerName: kpi.manager_name,
+        employeeName: kpi.employee_name,
+        link: link,
+      }
     );
+
+    // Send email to HR if enabled
+    const hrShouldReceive = await shouldSendHRNotification(kpiCompanyId);
+    if (hrShouldReceive) {
+      const hrEmails = await getHREmails(kpiCompanyId);
+      for (const hrEmail of hrEmails) {
+        await sendEmailWithFallback(
+          kpiCompanyId,
+          hrEmail,
+          'KPI Acknowledged',
+          emailHtml,
+          '',
+          'kpi_acknowledged',
+          {
+            managerName: kpi.manager_name,
+            employeeName: kpi.employee_name,
+            link: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/hr/kpi-details/${kpiId}`,
+          }
+        );
+      }
+    }
 
     // Create in-app notification for manager
     await query(
-      `INSERT INTO notifications (recipient_id, message, type, related_kpi_id)
-       VALUES ($1, $2, $3, $4)`,
+      `INSERT INTO notifications (recipient_id, message, type, related_kpi_id, company_id)
+       VALUES ($1, $2, $3, $4, $5)`,
       [
         kpi.manager_id,
         `${kpi.employee_name} has acknowledged the assigned KPIs`,
         'kpi_acknowledged',
         kpiId,
+        kpiCompanyId,
       ]
     );
 
-    // Notify HR
-    const hrUsers = await query("SELECT id FROM users WHERE role = 'hr'");
+    // Notify HR (in-app notifications)
+    const hrUsers = await query(
+      "SELECT id FROM users WHERE role = 'hr' AND company_id = $1",
+      [kpiCompanyId]
+    );
     for (const hr of hrUsers.rows) {
       await query(
-        `INSERT INTO notifications (recipient_id, message, type, related_kpi_id)
-         VALUES ($1, $2, $3, $4)`,
+        `INSERT INTO notifications (recipient_id, message, type, related_kpi_id, company_id)
+         VALUES ($1, $2, $3, $4, $5)`,
         [
           hr.id,
           `${kpi.employee_name} has acknowledged KPIs set by ${kpi.manager_name}`,
           'kpi_acknowledged',
           kpiId,
+          kpiCompanyId,
         ]
       );
     }
