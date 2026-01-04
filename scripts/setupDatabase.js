@@ -69,8 +69,139 @@ async function setupDatabase() {
     } catch (error) {
       console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
     }
+
+    // Execute migration for Power Automate template-specific URLs if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_power_automate_template_urls.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running Power Automate template URLs migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Power Automate template URLs migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
+    }
+
+    // Execute migration for CC emails in daily reminders if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_add_cc_emails_to_daily_reminders.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running CC emails migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ CC emails migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
+    }
+
+    // Execute migration for flexible reminder types if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_flexible_reminder_types.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running flexible reminder types migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Flexible reminder types migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
+    }
+
+    // Execute migration for KPI items enhancements if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_kpi_items_enhancements.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running KPI items enhancements migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ KPI items enhancements migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
+    }
+
+    // Execute migration for rating constraints update if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_update_rating_constraints.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running rating constraints update migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Rating constraints update migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
+    }
+
+    // Execute migration for multi-company support if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_multi_company_support.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running multi-company support migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Multi-company support migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
+    }
+
+    // Execute migration for super admin if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_add_super_admin.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running super admin migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Super admin migration executed successfully!');
+        console.log('💡 Run "npm run create-super-admin" to create the super admin user');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if tables already exist):', error.message);
+    }
+
+    // Execute migration for employee indexes if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_add_employee_indexes.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running employee indexes migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Employee indexes migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if indexes already exist):', error.message);
+    }
+
+    // Seed rating options (always run - these are configuration, not sample data)
+    try {
+      console.log('🔗 Seeding rating options...');
+      const ratingOptionsSeedPath = path.join(__dirname, '../database/seed_rating_options.sql');
+      if (fs.existsSync(ratingOptionsSeedPath)) {
+        const ratingOptionsSeedSQL = fs.readFileSync(ratingOptionsSeedPath, 'utf8');
+        await pool.query(ratingOptionsSeedSQL);
+        console.log('✅ Rating options seeded successfully!');
+      }
+    } catch (error) {
+      console.error('⚠️  Error seeding rating options (this is okay if options already exist):', error.message);
+    }
+
+    // Seed Power Automate URLs (always run - these are configuration, not sample data)
+    try {
+      console.log('🔗 Seeding Power Automate webhook URLs...');
+      const powerAutomateSeedPath = path.join(__dirname, '../database/seed_power_automate_urls.sql');
+      if (fs.existsSync(powerAutomateSeedPath)) {
+        const powerAutomateSeedSQL = fs.readFileSync(powerAutomateSeedPath, 'utf8');
+        await pool.query(powerAutomateSeedSQL);
+        console.log('✅ Power Automate webhook URLs seeded successfully!');
+      }
+    } catch (error) {
+      console.error('⚠️  Error seeding Power Automate URLs (this is okay if URLs already exist):', error.message);
+    }
     
-    // Ask if user wants to seed data
+    // Ask if user wants to seed sample data
     const readline = require('readline').createInterface({
       input: process.stdin,
       output: process.stdout

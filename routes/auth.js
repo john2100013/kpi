@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query } = require('../database/db');
+const { authenticateToken } = require('../middleware/auth');
 const router = express.Router();
 
 // Login endpoint - supports both methods
@@ -57,14 +58,35 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // Ensure user has company_id
-    if (!user.company_id) {
-      return res.status(403).json({ error: 'User must be associated with a company' });
+    // Super admin doesn't need company association
+    let userCompanies = [];
+    let selectedCompanyId = null;
+
+    if (user.role !== 'super_admin') {
+      // Get all companies for this user
+      const companiesResult = await query(
+        `SELECT c.id, c.name, c.domain, uc.is_primary
+         FROM companies c
+         INNER JOIN user_companies uc ON c.id = uc.company_id
+         WHERE uc.user_id = $1
+         ORDER BY uc.is_primary DESC, c.name`,
+        [user.id]
+      );
+
+      userCompanies = companiesResult.rows;
+
+      if (userCompanies.length === 0) {
+        return res.status(403).json({ error: 'User must be associated with at least one company' });
+      }
+
+      // Determine primary company (first one if no primary set)
+      const primaryCompany = userCompanies.find(c => c.is_primary) || userCompanies[0];
+      selectedCompanyId = primaryCompany.id;
     }
 
     // Generate JWT token (including company_id for multi-tenancy)
     const token = jwt.sign(
-      { userId: user.id, role: user.role, companyId: user.company_id },
+      { userId: user.id, role: user.role, companyId: selectedCompanyId },
       process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production',
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -74,7 +96,12 @@ router.post('/login', async (req, res) => {
 
     res.json({
       token,
-      user: userWithoutPassword,
+      user: {
+        ...userWithoutPassword,
+        company_id: selectedCompanyId,
+      },
+      companies: userCompanies,
+      hasMultipleCompanies: userCompanies.length > 1,
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -82,21 +109,57 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Get current user
-router.get('/me', async (req, res) => {
+// Select company (for users with multiple companies)
+router.post('/select-company', authenticateToken, async (req, res) => {
   try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+    const { companyId } = req.body;
 
-    if (!token) {
-      return res.status(401).json({ error: 'Access token required' });
+    if (!companyId) {
+      return res.status(400).json({ error: 'Company ID is required' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production');
-    
+    // Verify user has access to this company
+    const result = await query(
+      'SELECT company_id FROM user_companies WHERE user_id = $1 AND company_id = $2',
+      [req.user.id, companyId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(403).json({ error: 'You do not have access to this company' });
+    }
+
+    // Generate new token with selected company
+    const token = jwt.sign(
+      { userId: req.user.id, role: req.user.role, companyId: parseInt(companyId) },
+      process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production',
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    res.json({ token, companyId: parseInt(companyId) });
+  } catch (error) {
+    console.error('Select company error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get current user
+router.get('/me', authenticateToken, async (req, res) => {
+  try {
+    // Get user companies
+    const companiesResult = await query(
+      `SELECT c.id, c.name, c.domain, uc.is_primary
+       FROM companies c
+       INNER JOIN user_companies uc ON c.id = uc.company_id
+       WHERE uc.user_id = $1
+       ORDER BY uc.is_primary DESC, c.name`,
+      [req.user.id]
+    );
+
+    const userCompanies = companiesResult.rows;
+
     const result = await query(
       'SELECT id, name, email, role, payroll_number, national_id, department, position, employment_date, manager_id, company_id FROM users WHERE id = $1',
-      [decoded.userId]
+      [req.user.id]
     );
 
     if (result.rows.length === 0) {
@@ -104,7 +167,11 @@ router.get('/me', async (req, res) => {
     }
 
     const { password_hash, ...user } = result.rows[0];
-    res.json({ user });
+    res.json({ 
+      user,
+      companies: userCompanies,
+      hasMultipleCompanies: userCompanies.length > 1,
+    });
   } catch (error) {
     console.error('Get user error:', error);
     res.status(500).json({ error: 'Internal server error' });

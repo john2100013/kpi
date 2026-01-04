@@ -217,6 +217,138 @@ router.get('/review-completed', authenticateToken, authorizeRoles('manager', 'hr
   }
 });
 
+// Get employee performance data (all completed reviews for an employee)
+// NOTE: This route must come before /:id to avoid route conflicts
+router.get('/employee-performance/:employeeId', authenticateToken, authorizeRoles('hr', 'manager'), async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    
+    // Verify access
+    if (req.user.role === 'manager') {
+      // Manager can only see their direct reports
+      const employeeCheck = await query(
+        'SELECT id FROM users WHERE id = $1 AND manager_id = $2 AND company_id = $3',
+        [employeeId, req.user.id, req.user.company_id]
+      );
+      if (employeeCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'Access denied: Employee not in your team' });
+      }
+    } else if (req.user.role === 'hr') {
+      // HR can see all employees in their company
+      const employeeCheck = await query(
+        'SELECT id FROM users WHERE id = $1 AND company_id = $2',
+        [employeeId, req.user.company_id]
+      );
+      if (employeeCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'Access denied: Employee not in your company' });
+      }
+    }
+
+    // Get all completed reviews for this employee
+    const result = await query(
+      `SELECT k.*, 
+       e.name as employee_name, e.department as employee_department,
+       e.payroll_number as employee_payroll_number,
+       m.name as manager_name,
+       kr.id as review_id,
+       kr.review_status,
+       kr.manager_rating,
+       kr.employee_rating,
+       kr.manager_comment,
+       kr.employee_comment,
+       kr.manager_signed_at,
+       kr.review_quarter,
+       kr.review_year
+       FROM kpis k
+       JOIN users e ON k.employee_id = e.id
+       JOIN users m ON k.manager_id = m.id
+       JOIN kpi_reviews kr ON k.id = kr.kpi_id AND kr.company_id = k.company_id
+       WHERE k.employee_id = $1 
+         AND k.company_id = $2
+         AND (kr.review_status = 'manager_submitted' OR kr.review_status = 'completed')
+       ORDER BY k.year DESC, k.quarter DESC, k.period DESC`,
+      [employeeId, req.user.company_id]
+    );
+
+    // Fetch items and calculate final ratings for each KPI
+    const performanceData = await Promise.all(
+      result.rows.map(async (kpi) => {
+        const itemsResult = await query(
+          'SELECT * FROM kpi_items WHERE kpi_id = $1 ORDER BY item_order',
+          [kpi.id]
+        );
+        
+        // Parse manager ratings from JSON
+        let managerItemRatings = {};
+        try {
+          const mgrData = JSON.parse(kpi.manager_comment || '{}');
+          if (mgrData.items && Array.isArray(mgrData.items)) {
+            mgrData.items.forEach((item) => {
+              if (item.item_id) {
+                managerItemRatings[item.item_id] = parseFloat(item.rating) || 0;
+              }
+            });
+          }
+        } catch {
+          // Not JSON, use legacy format
+        }
+
+        // Calculate final rating: Σ(manager_rating * goal_weight)
+        let finalRating = 0;
+        let totalWeight = 0;
+        const itemCalculations = itemsResult.rows.map((item) => {
+          let mgrRating = managerItemRatings[item.id] || 0;
+          // Parse goal_weight as percentage (e.g., "40%" or "0.4" or "40")
+          let weight = 0;
+          if (item.goal_weight) {
+            const weightStr = String(item.goal_weight).trim();
+            if (weightStr.endsWith('%')) {
+              weight = parseFloat(weightStr.replace('%', '')) / 100;
+            } else {
+              weight = parseFloat(weightStr);
+              // If weight > 1, assume it's a percentage (e.g., 40 means 40%)
+              if (weight > 1) {
+                weight = weight / 100;
+              }
+            }
+          }
+          // Ensure weight and rating are valid numbers
+          if (isNaN(weight)) weight = 0;
+          if (isNaN(mgrRating)) mgrRating = 0;
+          const contribution = mgrRating * weight;
+          finalRating += contribution;
+          totalWeight += weight;
+          return {
+            item_id: item.id,
+            title: item.title,
+            manager_rating: mgrRating,
+            goal_weight: weight,
+            contribution: contribution,
+          };
+        });
+
+        // Ensure finalRating and totalWeight are valid numbers
+        if (isNaN(finalRating)) finalRating = 0;
+        if (isNaN(totalWeight)) totalWeight = 0;
+
+        return {
+          ...kpi,
+          items: itemsResult.rows,
+          item_count: itemsResult.rows.length,
+          final_rating: finalRating,
+          total_weight: totalWeight,
+          item_calculations: itemCalculations,
+        };
+      })
+    );
+
+    res.json({ performance: performanceData });
+  } catch (error) {
+    console.error('Get employee performance error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
 // Get KPI by ID
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
@@ -306,6 +438,46 @@ router.post('/', authenticateToken, authorizeRoles('manager'), async (req, res) 
       return res.status(403).json({ error: 'You can only set KPIs for your team members' });
     }
 
+    // Validate that the period matches an active period setting in the database
+    if (period === 'quarterly' && !quarter) {
+      return res.status(400).json({ error: 'quarter is required for quarterly KPIs' });
+    }
+
+    let periodQuery = `
+      SELECT * FROM kpi_period_settings 
+      WHERE company_id = $1 AND period_type = $2 AND year = $3 AND is_active = true
+    `;
+    const periodParams = [req.user.company_id, period, year || new Date().getFullYear()];
+    
+    if (period === 'quarterly') {
+      periodQuery += ` AND quarter = $4`;
+      periodParams.push(quarter);
+    } else {
+      periodQuery += ` AND quarter IS NULL`;
+    }
+
+    const periodCheck = await query(periodQuery, periodParams);
+    
+    if (periodCheck.rows.length === 0) {
+      return res.status(400).json({ 
+        error: `No active ${period} period setting found for ${quarter || ''} ${year || new Date().getFullYear()}. Please ensure HR has configured this period in Settings.` 
+      });
+    }
+
+    const periodSetting = periodCheck.rows[0];
+    
+    // Validate meeting_date is within the period range (optional validation - just log warning)
+    if (meeting_date) {
+      const meetingDateObj = new Date(meeting_date);
+      const startDate = new Date(periodSetting.start_date);
+      const endDate = new Date(periodSetting.end_date);
+      
+      if (meetingDateObj < startDate || meetingDateObj > endDate) {
+        // Warning but not blocking - meeting can be scheduled outside period
+        console.log(`⚠️  Meeting date ${meeting_date} is outside period range ${periodSetting.start_date} - ${periodSetting.end_date}`);
+      }
+    }
+
     // Prepare KPI items array
     let itemsToCreate = [];
     if (kpi_items && Array.isArray(kpi_items) && kpi_items.length > 0) {
@@ -361,15 +533,17 @@ router.post('/', authenticateToken, authorizeRoles('manager'), async (req, res) 
       const item = itemsToCreate[i];
       await query(
         `INSERT INTO kpi_items (
-          kpi_id, title, description, target_value, measure_unit, measure_criteria, item_order
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          kpi_id, title, description, current_performance_status, target_value, expected_completion_date, measure_unit, goal_weight, item_order
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           kpi.id,
           item.title,
           item.description || '',
+          item.current_performance_status || '',
           item.target_value || '',
+          item.expected_completion_date || null,
           item.measure_unit || '',
-          item.measure_criteria || '',
+          item.goal_weight || item.measure_criteria || '', // Support legacy field name
           i + 1,
         ]
       );

@@ -9,19 +9,32 @@ require('dotenv').config();
  * @param {string} subject - Email subject
  * @param {string} htmlBody - Email HTML body
  * @param {string} textBody - Email text body (optional)
- * @param {Object} additionalData - Additional data to include in the webhook payload
+ * @param {Object} additionalData - Additional data to include in the webhook payload (includes templateType)
  * @returns {Promise<Object>} Response object with success status
  */
 const sendEmailViaPowerAutomate = async (companyId, to, subject, htmlBody, textBody = '', additionalData = {}) => {
   try {
-    // Get Power Automate webhook URL for this company
-    const configResult = await query(
-      'SELECT webhook_url, is_active FROM power_automate_config WHERE company_id = $1 AND is_active = true',
-      [companyId]
-    );
+    const templateType = additionalData.templateType || null;
+    
+    // First, try to get template-specific webhook URL
+    let configResult;
+    if (templateType) {
+      configResult = await query(
+        'SELECT webhook_url, is_active FROM power_automate_config WHERE company_id = $1 AND template_type = $2 AND is_active = true',
+        [companyId, templateType]
+      );
+    }
+    
+    // If no template-specific URL found, try to get default URL (template_type IS NULL)
+    if (!configResult || configResult.rows.length === 0) {
+      configResult = await query(
+        'SELECT webhook_url, is_active FROM power_automate_config WHERE company_id = $1 AND template_type IS NULL AND is_active = true',
+        [companyId]
+      );
+    }
 
     if (configResult.rows.length === 0) {
-      console.log(`⚠️  Power Automate not configured for company ${companyId}. Email not sent to ${to}`);
+      console.log(`⚠️  Power Automate not configured for company ${companyId}${templateType ? ` and template type ${templateType}` : ''}. Email not sent to ${to}`);
       return { success: false, error: 'Power Automate not configured', skipped: true };
     }
 
@@ -45,7 +58,24 @@ const sendEmailViaPowerAutomate = async (companyId, to, subject, htmlBody, textB
     });
 
     console.log(`✅ Power Automate email sent to ${to}: ${subject} (Status: ${response.status})`);
-    return { success: true, status: response.status, messageId: response.data?.messageId || 'sent' };
+    
+    // Log detailed response for troubleshooting
+    if (process.env.NODE_ENV === 'development' || process.env.LOG_POWER_AUTOMATE_RESPONSE === 'true') {
+      console.log('📧 Power Automate Response Details:', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+        data: response.data,
+        messageId: response.data?.messageId || response.headers['x-ms-request-id'] || 'unknown'
+      });
+    }
+    
+    return { 
+      success: true, 
+      status: response.status, 
+      messageId: response.data?.messageId || response.headers['x-ms-request-id'] || 'sent',
+      responseHeaders: response.headers
+    };
   } catch (error) {
     console.error(`❌ Power Automate email send error to ${to}:`, error.message);
     if (error.response) {
@@ -99,6 +129,34 @@ const renderTemplate = (templateBody, variables) => {
 };
 
 /**
+ * Get rendered email template content (database first, then hardcoded)
+ * @param {number} companyId - Company ID
+ * @param {string} templateType - Template type
+ * @param {Object} variables - Variables for template rendering
+ * @returns {Promise<{subject: string, html: string, text: string}>} Template content
+ */
+const getRenderedTemplate = async (companyId, templateType, variables = {}) => {
+  try {
+    // Try to get template from database
+    const template = await getEmailTemplate(companyId, templateType);
+
+    if (template) {
+      // Use database template
+      const subject = renderTemplate(template.subject, variables);
+      const htmlBody = renderTemplate(template.body_html, variables);
+      const textBody = template.body_text ? renderTemplate(template.body_text, variables) : '';
+      return { subject, html: htmlBody, text: textBody };
+    }
+  } catch (error) {
+    console.error('Error fetching database template:', error);
+  }
+
+  // Fallback to default templates (from emailService.js)
+  const { getDefaultEmailTemplate } = require('./emailService');
+  return getDefaultEmailTemplate(templateType, variables);
+};
+
+/**
  * Send email using template from database or fallback to default
  * @param {number} companyId - Company ID
  * @param {string} to - Recipient email address
@@ -109,84 +167,15 @@ const renderTemplate = (templateBody, variables) => {
  */
 const sendTemplatedEmail = async (companyId, to, templateType, variables = {}, additionalData = {}) => {
   try {
-    // Try to get template from database
-    const template = await getEmailTemplate(companyId, templateType);
-
-    let subject, htmlBody;
-
-    if (template) {
-      // Use database template
-      subject = renderTemplate(template.subject, variables);
-      htmlBody = renderTemplate(template.body_html, variables);
-    } else {
-      // Fallback to default templates (from emailService.js)
-      const { emailTemplates } = require('./emailService');
-      
-      // Map template types to default template functions
-      const defaultTemplates = {
-        kpi_setting_reminder: emailTemplates.kpiSettingReminder,
-        kpi_review_reminder: emailTemplates.kpiReviewReminder,
-        kpi_assigned: emailTemplates.kpiAssigned,
-        kpi_acknowledged: emailTemplates.kpiAcknowledged,
-        self_rating_submitted: emailTemplates.selfRatingSubmitted,
-        review_completed: emailTemplates.reviewCompleted,
-      };
-
-      const defaultTemplateFn = defaultTemplates[templateType];
-      if (!defaultTemplateFn) {
-        throw new Error(`Unknown template type: ${templateType}`);
-      }
-
-      // Call default template function with variables
-      // Adjust parameters based on template function signature
-      if (templateType === 'kpi_setting_reminder') {
-        htmlBody = defaultTemplateFn(
-          variables.employeeName || '',
-          variables.managerName || '',
-          variables.meetingDate || '',
-          variables.reminderType || '',
-          variables.link || ''
-        );
-      } else if (templateType === 'kpi_review_reminder') {
-        htmlBody = defaultTemplateFn(
-          variables.employeeName || '',
-          variables.period || '',
-          variables.dueDate || '',
-          variables.link || ''
-        );
-      } else if (templateType === 'kpi_assigned') {
-        htmlBody = defaultTemplateFn(
-          variables.employeeName || '',
-          variables.managerName || '',
-          variables.link || ''
-        );
-      } else if (templateType === 'kpi_acknowledged') {
-        htmlBody = defaultTemplateFn(
-          variables.managerName || '',
-          variables.employeeName || '',
-          variables.link || ''
-        );
-      } else if (templateType === 'self_rating_submitted') {
-        htmlBody = defaultTemplateFn(
-          variables.managerName || '',
-          variables.employeeName || '',
-          variables.link || ''
-        );
-      } else if (templateType === 'review_completed') {
-        htmlBody = defaultTemplateFn(
-          variables.employeeName || '',
-          variables.managerName || '',
-          variables.link || ''
-        );
-      }
-      
-      subject = `KPI ${templateType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}`;
-    }
+    // Get rendered template content
+    const templateContent = await getRenderedTemplate(companyId, templateType, variables);
 
     // Send via Power Automate
-    return await sendEmailViaPowerAutomate(companyId, to, subject, htmlBody, '', {
+    // Include both variables and additionalData in the payload so Power Automate has access to all data
+    return await sendEmailViaPowerAutomate(companyId, to, templateContent.subject, templateContent.html, templateContent.text, {
       templateType,
-      ...additionalData,
+      ...variables, // Include all template variables (employeeName, managerName, etc.)
+      ...additionalData, // Include any additional data
     });
   } catch (error) {
     console.error('Error sending templated email:', error);
@@ -199,5 +188,6 @@ module.exports = {
   getEmailTemplate,
   renderTemplate,
   sendTemplatedEmail,
+  getRenderedTemplate,
 };
 

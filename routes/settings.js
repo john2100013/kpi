@@ -8,12 +8,19 @@ const router = express.Router();
 // Get all period settings for company
 router.get('/period-settings', authenticateToken, authorizeRoles('hr'), async (req, res) => {
   try {
+    // Use to_char to format dates as strings directly in SQL to avoid timezone conversion
     const result = await query(
-      `SELECT * FROM kpi_period_settings 
+      `SELECT 
+        id, company_id, period_type, quarter, year, is_active, created_at, updated_at,
+        to_char(start_date, 'YYYY-MM-DD') as start_date,
+        to_char(end_date, 'YYYY-MM-DD') as end_date
+       FROM kpi_period_settings 
        WHERE company_id = $1 
        ORDER BY year DESC, period_type, quarter`,
       [req.user.company_id]
     );
+    
+    console.log('📥 [PERIOD SETTINGS GET] Returning settings:', result.rows);
     res.json({ settings: result.rows });
   } catch (error) {
     console.error('Get period settings error:', error);
@@ -24,49 +31,137 @@ router.get('/period-settings', authenticateToken, authorizeRoles('hr'), async (r
 // Create or update period setting
 router.post('/period-settings', authenticateToken, authorizeRoles('hr'), async (req, res) => {
   try {
-    const { period_type, quarter, year, start_date, end_date, is_active } = req.body;
+    const { id, period_type, quarter, year, start_date, end_date, is_active } = req.body;
 
-    if (!period_type || !year || !start_date || !end_date) {
-      return res.status(400).json({ error: 'period_type, year, start_date, and end_date are required' });
+    console.log('📝 [PERIOD SETTINGS] Received request:', {
+      id,
+      period_type,
+      quarter,
+      year,
+      start_date,
+      end_date,
+      is_active,
+      company_id: req.user.company_id
+    });
+
+    // Validate required fields
+    if (!period_type || !year) {
+      console.error('❌ [PERIOD SETTINGS] Missing required fields:', { period_type, year });
+      return res.status(400).json({ error: 'period_type and year are required' });
+    }
+
+    if (!start_date || !end_date) {
+      console.error('❌ [PERIOD SETTINGS] Missing date fields:', { start_date, end_date });
+      return res.status(400).json({ error: 'start_date and end_date are required' });
+    }
+
+    // Validate date format (should be YYYY-MM-DD)
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(start_date)) {
+      console.error('❌ [PERIOD SETTINGS] Invalid start_date format:', start_date);
+      return res.status(400).json({ error: 'start_date must be in YYYY-MM-DD format' });
+    }
+    if (!dateRegex.test(end_date)) {
+      console.error('❌ [PERIOD SETTINGS] Invalid end_date format:', end_date);
+      return res.status(400).json({ error: 'end_date must be in YYYY-MM-DD format' });
     }
 
     if (period_type === 'quarterly' && !quarter) {
+      console.error('❌ [PERIOD SETTINGS] Missing quarter for quarterly period');
       return res.status(400).json({ error: 'quarter is required for quarterly period' });
     }
 
-    // Check if setting already exists
-    const existingResult = await query(
-      `SELECT id FROM kpi_period_settings 
-       WHERE company_id = $1 AND period_type = $2 AND year = $3 
-       AND (quarter = $4 OR (quarter IS NULL AND $4 IS NULL))`,
-      [req.user.company_id, period_type, year, quarter || null]
-    );
-
     let result;
-    if (existingResult.rows.length > 0) {
-      // Update existing
+    
+    // If id is provided, update the specific record
+    if (id) {
+      console.log('🔄 [PERIOD SETTINGS] Updating existing record with id:', id);
+      
+      // Verify the record exists and belongs to the company
+      const checkResult = await query(
+        'SELECT id FROM kpi_period_settings WHERE id = $1 AND company_id = $2',
+        [id, req.user.company_id]
+      );
+
+      if (checkResult.rows.length === 0) {
+        console.error('❌ [PERIOD SETTINGS] Record not found or access denied:', { id, company_id: req.user.company_id });
+        return res.status(404).json({ error: 'Period setting not found or access denied' });
+      }
+
+      // Update existing record
       result = await query(
         `UPDATE kpi_period_settings 
-         SET start_date = $1, end_date = $2, is_active = $3, updated_at = NOW()
-         WHERE id = $4
+         SET period_type = $1, quarter = $2, year = $3, start_date = $4, end_date = $5, is_active = $6, updated_at = NOW()
+         WHERE id = $7 AND company_id = $8
          RETURNING *`,
-        [start_date, end_date, is_active !== false, existingResult.rows[0].id]
+        [period_type, quarter || null, year, start_date, end_date, is_active !== false, id, req.user.company_id]
       );
+
+      console.log('✅ [PERIOD SETTINGS] Updated record:', result.rows[0]);
     } else {
-      // Create new
-      result = await query(
-        `INSERT INTO kpi_period_settings 
-         (company_id, period_type, quarter, year, start_date, end_date, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING *`,
-        [req.user.company_id, period_type, quarter || null, year, start_date, end_date, is_active !== false]
+      // Check if setting already exists (for create)
+      console.log('🔍 [PERIOD SETTINGS] Checking for existing record...');
+      const existingResult = await query(
+        `SELECT id FROM kpi_period_settings 
+         WHERE company_id = $1 AND period_type = $2 AND year = $3 
+         AND (quarter = $4 OR (quarter IS NULL AND $4 IS NULL))`,
+        [req.user.company_id, period_type, year, quarter || null]
       );
+
+      if (existingResult.rows.length > 0) {
+        // Update existing record found by period_type, year, quarter
+        console.log('🔄 [PERIOD SETTINGS] Found existing record, updating:', existingResult.rows[0].id);
+        result = await query(
+          `UPDATE kpi_period_settings 
+           SET period_type = $1, quarter = $2, year = $3, start_date = $4, end_date = $5, is_active = $6, updated_at = NOW()
+           WHERE id = $7
+           RETURNING *`,
+          [period_type, quarter || null, year, start_date, end_date, is_active !== false, existingResult.rows[0].id]
+        );
+        console.log('✅ [PERIOD SETTINGS] Updated existing record:', result.rows[0]);
+      } else {
+        // Create new
+        console.log('➕ [PERIOD SETTINGS] Creating new record...');
+        result = await query(
+          `INSERT INTO kpi_period_settings 
+           (company_id, period_type, quarter, year, start_date, end_date, is_active)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING *`,
+          [req.user.company_id, period_type, quarter || null, year, start_date, end_date, is_active !== false]
+        );
+        console.log('✅ [PERIOD SETTINGS] Created new record:', result.rows[0]);
+      }
     }
 
-    res.json({ setting: result.rows[0] });
+    if (result.rows.length === 0) {
+      console.error('❌ [PERIOD SETTINGS] No record returned from database operation');
+      return res.status(500).json({ error: 'Failed to save period setting' });
+    }
+
+    // Format dates using to_char in SQL to avoid timezone conversion issues
+    const savedSetting = result.rows[0];
+    
+    // Query again with to_char to get properly formatted dates
+    const formattedResult = await query(
+      `SELECT 
+        id, company_id, period_type, quarter, year, is_active, created_at, updated_at,
+        to_char(start_date, 'YYYY-MM-DD') as start_date,
+        to_char(end_date, 'YYYY-MM-DD') as end_date
+       FROM kpi_period_settings 
+       WHERE id = $1`,
+      [savedSetting.id]
+    );
+
+    console.log('✅ [PERIOD SETTINGS] Returning formatted setting:', formattedResult.rows[0]);
+    res.json({ setting: formattedResult.rows[0] });
   } catch (error) {
-    console.error('Create/update period setting error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('❌ [PERIOD SETTINGS] Error:', error);
+    console.error('❌ [PERIOD SETTINGS] Error details:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code
+    });
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 
@@ -89,6 +184,36 @@ router.delete('/period-settings/:id', authenticateToken, authorizeRoles('hr'), a
     res.json({ message: 'Setting deleted successfully' });
   } catch (error) {
     console.error('Delete period setting error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get available KPI periods for managers/employees (active periods only)
+router.get('/available-periods', authenticateToken, async (req, res) => {
+  try {
+    const { period_type } = req.query; // Optional filter: 'quarterly' or 'yearly'
+    
+    let queryText = `
+      SELECT 
+        id, company_id, period_type, quarter, year, is_active, created_at, updated_at,
+        to_char(start_date, 'YYYY-MM-DD') as start_date,
+        to_char(end_date, 'YYYY-MM-DD') as end_date
+      FROM kpi_period_settings 
+      WHERE company_id = $1 AND is_active = true
+    `;
+    const params = [req.user.company_id];
+    
+    if (period_type) {
+      queryText += ` AND period_type = $2`;
+      params.push(period_type);
+    }
+    
+    queryText += ` ORDER BY year DESC, period_type, quarter`;
+    
+    const result = await query(queryText, params);
+    res.json({ periods: result.rows });
+  } catch (error) {
+    console.error('Get available periods error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -226,7 +351,20 @@ router.get('/daily-reminder-settings', authenticateToken, authorizeRoles('hr'), 
 // Create or update daily reminder settings
 router.post('/daily-reminder-settings', authenticateToken, authorizeRoles('hr'), async (req, res) => {
   try {
-    const { send_daily_reminders, days_before_meeting } = req.body;
+    const { send_daily_reminders, days_before_meeting, cc_emails } = req.body;
+
+    // Validate CC emails format (comma-separated)
+    let ccEmailsValue = null;
+    if (cc_emails && typeof cc_emails === 'string' && cc_emails.trim()) {
+      // Basic email validation
+      const emails = cc_emails.split(',').map(e => e.trim()).filter(e => e);
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const invalidEmails = emails.filter(e => !emailRegex.test(e));
+      if (invalidEmails.length > 0) {
+        return res.status(400).json({ error: `Invalid email addresses: ${invalidEmails.join(', ')}` });
+      }
+      ccEmailsValue = emails.join(', ');
+    }
 
     // Check if setting exists
     const existingResult = await query(
@@ -239,19 +377,19 @@ router.post('/daily-reminder-settings', authenticateToken, authorizeRoles('hr'),
       // Update
       result = await query(
         `UPDATE kpi_setting_daily_reminder_settings 
-         SET send_daily_reminders = $1, days_before_meeting = $2, updated_at = NOW()
-         WHERE company_id = $3
+         SET send_daily_reminders = $1, days_before_meeting = $2, cc_emails = $3, updated_at = NOW()
+         WHERE company_id = $4
          RETURNING *`,
-        [send_daily_reminders !== false, days_before_meeting || 3, req.user.company_id]
+        [send_daily_reminders !== false, days_before_meeting || 3, ccEmailsValue, req.user.company_id]
       );
     } else {
       // Create
       result = await query(
         `INSERT INTO kpi_setting_daily_reminder_settings 
-         (company_id, send_daily_reminders, days_before_meeting)
-         VALUES ($1, $2, $3)
+         (company_id, send_daily_reminders, days_before_meeting, cc_emails)
+         VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [req.user.company_id, send_daily_reminders !== false, days_before_meeting || 3]
+        [req.user.company_id, send_daily_reminders !== false, days_before_meeting || 3, ccEmailsValue]
       );
     }
 

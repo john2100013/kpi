@@ -39,6 +39,23 @@ router.get('/:id', authenticateToken, authorizeRoles('hr'), async (req, res) => 
   }
 });
 
+// Helper function to convert HTML to plain text
+const htmlToText = (html) => {
+  if (!html) return '';
+  // Remove HTML tags
+  let text = html.replace(/<[^>]*>/g, '');
+  // Decode HTML entities
+  text = text.replace(/&nbsp;/g, ' ');
+  text = text.replace(/&amp;/g, '&');
+  text = text.replace(/&lt;/g, '<');
+  text = text.replace(/&gt;/g, '>');
+  text = text.replace(/&quot;/g, '"');
+  text = text.replace(/&#39;/g, "'");
+  // Clean up whitespace
+  text = text.replace(/\s+/g, ' ').trim();
+  return text;
+};
+
 // Create or update email template (HR only)
 router.post('/', authenticateToken, authorizeRoles('hr'), async (req, res) => {
   try {
@@ -47,6 +64,11 @@ router.post('/', authenticateToken, authorizeRoles('hr'), async (req, res) => {
     if (!template_type || !subject || !body_html) {
       return res.status(400).json({ error: 'template_type, subject, and body_html are required' });
     }
+
+    // Auto-generate text body from HTML if not provided
+    const finalBodyText = body_text && body_text.trim() !== '' 
+      ? body_text 
+      : htmlToText(body_html);
 
     // Validate template_type
     const validTypes = [
@@ -78,7 +100,7 @@ router.post('/', authenticateToken, authorizeRoles('hr'), async (req, res) => {
         [
           subject,
           body_html,
-          body_text || null,
+          finalBodyText || null,
           is_active !== undefined ? is_active : true,
           existingResult.rows[0].id,
           req.user.company_id,
@@ -97,7 +119,7 @@ router.post('/', authenticateToken, authorizeRoles('hr'), async (req, res) => {
           template_type,
           subject,
           body_html,
-          body_text || null,
+          finalBodyText || null,
           is_active !== undefined ? is_active : true,
         ]
       );

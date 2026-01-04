@@ -13,6 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/companies', require('./routes/companies'));
 app.use('/api/employees', require('./routes/employees'));
 app.use('/api/kpis', require('./routes/kpis'));
 app.use('/api/kpi-acknowledgement', require('./routes/kpiAcknowledgement'));
@@ -23,6 +24,7 @@ app.use('/api/departments', require('./routes/departments'));
 app.use('/api/email-templates', require('./routes/emailTemplates'));
 app.use('/api/meetings', require('./routes/meetings'));
 app.use('/api/power-automate', require('./routes/powerAutomate'));
+app.use('/api/rating-options', require('./routes/ratingOptions'));
 
 // Health check
 app.get('/api/health', (req, res) => {

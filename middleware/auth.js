@@ -12,9 +12,9 @@ const authenticateToken = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production');
     
-    // Get user from database (including company_id)
+    // Get user from database
     const result = await query(
-      'SELECT id, name, email, role, payroll_number, department, position, company_id FROM users WHERE id = $1',
+      'SELECT id, name, email, role, payroll_number, department, position FROM users WHERE id = $1',
       [decoded.userId]
     );
 
@@ -24,9 +24,26 @@ const authenticateToken = async (req, res, next) => {
 
     req.user = result.rows[0];
     
-    // Ensure company_id is set (required for multi-tenancy)
-    if (!req.user.company_id) {
-      return res.status(403).json({ error: 'User must be associated with a company' });
+    // Super admin doesn't need company association
+    if (req.user.role === 'super_admin') {
+      req.user.company_id = null; // Super admin has access to all companies
+    } else {
+      // Use company_id from token (selected company)
+      req.user.company_id = decoded.companyId;
+      
+      // Verify user has access to this company
+      if (decoded.companyId) {
+        const companyCheck = await query(
+          'SELECT company_id FROM user_companies WHERE user_id = $1 AND company_id = $2',
+          [req.user.id, decoded.companyId]
+        );
+
+        if (companyCheck.rows.length === 0) {
+          return res.status(403).json({ error: 'User does not have access to this company' });
+        }
+      } else {
+        return res.status(403).json({ error: 'Company must be selected' });
+      }
     }
     next();
   } catch (error) {

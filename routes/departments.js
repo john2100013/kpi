@@ -3,16 +3,33 @@ const { query } = require('../database/db');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 const router = express.Router();
 
-// Get department statistics with KPI status breakdown (HR only)
-router.get('/statistics', authenticateToken, authorizeRoles('hr'), async (req, res) => {
+// Get department statistics with KPI status breakdown (HR and Manager)
+router.get('/statistics', authenticateToken, authorizeRoles('hr', 'manager'), async (req, res) => {
   try {
-    // Get all departments for the company
-    const departmentsResult = await query(
-      `SELECT DISTINCT department FROM users 
-       WHERE company_id = $1 AND department IS NOT NULL AND department != ''
-       ORDER BY department`,
-      [req.user.company_id]
-    );
+    // Get departments based on user role
+    let departmentsResult;
+    if (req.user.role === 'hr') {
+      // HR sees all departments in the company
+      departmentsResult = await query(
+        `SELECT DISTINCT department FROM users 
+         WHERE company_id = $1 AND department IS NOT NULL AND department != ''
+         ORDER BY department`,
+        [req.user.company_id]
+      );
+    } else if (req.user.role === 'manager') {
+      // Manager sees only departments they manage (departments of their direct reports)
+      departmentsResult = await query(
+        `SELECT DISTINCT u.department FROM users u
+         WHERE u.company_id = $1 
+         AND u.department IS NOT NULL 
+         AND u.department != ''
+         AND u.manager_id = $2
+         ORDER BY u.department`,
+        [req.user.company_id, req.user.id]
+      );
+    } else {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
     const departments = departmentsResult.rows.map(row => row.department);
     const statistics = [];
@@ -114,8 +131,8 @@ router.get('/statistics', authenticateToken, authorizeRoles('hr'), async (req, r
   }
 });
 
-// Get employees in a specific department and category
-router.get('/statistics/:department/:category', authenticateToken, authorizeRoles('hr'), async (req, res) => {
+// Get employees in a specific department and category (HR and Manager)
+router.get('/statistics/:department/:category', authenticateToken, authorizeRoles('hr', 'manager'), async (req, res) => {
   try {
     const { department, category } = req.params;
 
@@ -132,12 +149,38 @@ router.get('/statistics/:department/:category', authenticateToken, authorizeRole
       return res.status(400).json({ error: 'Invalid category' });
     }
 
-    // Get all employees in this department
-    const employeesResult = await query(
-      `SELECT id FROM users 
-       WHERE company_id = $1 AND department = $2 AND role = 'employee'`,
-      [req.user.company_id, department]
-    );
+    // Get employees in this department based on user role
+    let employeesResult;
+    if (req.user.role === 'hr') {
+      // HR sees all employees in the department
+      employeesResult = await query(
+        `SELECT id FROM users 
+         WHERE company_id = $1 AND department = $2 AND role = 'employee'`,
+        [req.user.company_id, department]
+      );
+    } else if (req.user.role === 'manager') {
+      // Manager sees only their direct reports in this department
+      employeesResult = await query(
+        `SELECT id FROM users 
+         WHERE company_id = $1 AND department = $2 AND role = 'employee' AND manager_id = $3`,
+        [req.user.company_id, department, req.user.id]
+      );
+      
+      // Verify manager has access to this department
+      if (employeesResult.rows.length === 0) {
+        // Check if manager manages any employees in this department
+        const verifyResult = await query(
+          `SELECT COUNT(*) as count FROM users 
+           WHERE company_id = $1 AND department = $2 AND manager_id = $3`,
+          [req.user.company_id, department, req.user.id]
+        );
+        if (parseInt(verifyResult.rows[0].count) === 0) {
+          return res.status(403).json({ error: 'Access denied: You do not manage employees in this department' });
+        }
+      }
+    } else {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
     const employeeIds = employeesResult.rows.map(e => e.id);
     if (employeeIds.length === 0) {
