@@ -244,9 +244,9 @@ router.post('/onboard', authenticateToken, authorizeRoles('super_admin'), async 
           }
 
           // Create employee (no email/password required)
-          await query(
+          const employeeResult = await query(
             `INSERT INTO users (name, payroll_number, national_id, role, department, department_id, position, employment_date, manager_id, company_id)
-             VALUES ($1, $2, $3, 'employee', $4, $5, $6, $7, $8, $9)`,
+             VALUES ($1, $2, $3, 'employee', $4, $5, $6, $7, $8, $9) RETURNING id`,
             [
               employee.name,
               employee.payrollNumber,
@@ -258,6 +258,13 @@ router.post('/onboard', authenticateToken, authorizeRoles('super_admin'), async 
               managerId,
               companyId
             ]
+          );
+          
+          // Add to user_companies (required for login)
+          const employeeId = employeeResult.rows[0].id;
+          await query(
+            'INSERT INTO user_companies (user_id, company_id, is_primary) VALUES ($1, $2, $3)',
+            [employeeId, companyId, true]
           );
         }
       }
@@ -407,9 +414,9 @@ router.post('/:companyId/employees/upload', authenticateToken, authorizeRoles('h
         // Get department ID
         const deptId = employee.department ? departmentMap[employee.department.toLowerCase()] : null;
 
-        await query(
+        const employeeResult = await query(
           `INSERT INTO users (name, payroll_number, national_id, role, department, department_id, position, employment_date, manager_id, company_id)
-           VALUES ($1, $2, $3, 'employee', $4, $5, $6, $7, $8, $9)`,
+           VALUES ($1, $2, $3, 'employee', $4, $5, $6, $7, $8, $9) RETURNING id`,
           [
             employee.name,
             employee.payrollNumber,
@@ -422,6 +429,14 @@ router.post('/:companyId/employees/upload', authenticateToken, authorizeRoles('h
             companyId
           ]
         );
+
+        // Add to user_companies (required for login)
+        const employeeId = employeeResult.rows[0].id;
+        await query(
+          'INSERT INTO user_companies (user_id, company_id, is_primary) VALUES ($1, $2, $3) ON CONFLICT (user_id, company_id) DO NOTHING',
+          [employeeId, companyId, true]
+        );
+
         successCount++;
       }
 

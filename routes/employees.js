@@ -192,6 +192,14 @@ router.post('/', authenticateToken, authorizeRoles('hr', 'super_admin'), async (
       [name, payrollNumber, nationalId, department || null, departmentId || null, position || null, employmentDate || null, managerId || null, companyId]
     );
 
+    const employeeId = result.rows[0].id;
+
+    // Add to user_companies (required for login)
+    await query(
+      'INSERT INTO user_companies (user_id, company_id, is_primary) VALUES ($1, $2, $3) ON CONFLICT (user_id, company_id) DO NOTHING',
+      [employeeId, companyId, true]
+    );
+
     res.status(201).json({ employee: result.rows[0] });
   } catch (error) {
     console.error('Create employee error:', error);
@@ -310,9 +318,9 @@ router.post('/upload', authenticateToken, authorizeRoles('hr', 'super_admin'), u
 
         const deptId = department ? departmentMap[String(department).trim().toLowerCase()] : null;
 
-        await query(
+        const employeeResult = await query(
           `INSERT INTO users (name, payroll_number, national_id, role, department, department_id, position, employment_date, manager_id, company_id)
-           VALUES ($1, $2, $3, 'employee', $4, $5, $6, $7, $8, $9)`,
+           VALUES ($1, $2, $3, 'employee', $4, $5, $6, $7, $8, $9) RETURNING id`,
           [
             String(name).trim(),
             String(payrollNumber).trim(),
@@ -325,6 +333,14 @@ router.post('/upload', authenticateToken, authorizeRoles('hr', 'super_admin'), u
             companyId
           ]
         );
+
+        // Add to user_companies (required for login)
+        const employeeId = employeeResult.rows[0].id;
+        await query(
+          'INSERT INTO user_companies (user_id, company_id, is_primary) VALUES ($1, $2, $3) ON CONFLICT (user_id, company_id) DO NOTHING',
+          [employeeId, companyId, true]
+        );
+
         successCount++;
       }
 
