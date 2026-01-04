@@ -1,0 +1,16 @@
+# Files and folders to EXCLUDE when uploading to cPanel
+# These will be installed/created on the server
+
+node_modules/
+.git/
+.env
+*.log
+*.rar
+*.zip
+.DS_Store
+Thumbs.db
+
+# Keep these - they're needed
+!package.json
+!package-lock.json
+
