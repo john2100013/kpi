@@ -175,17 +175,30 @@ async function setupDatabase() {
       console.log('⚠️  Migration error (may be okay if indexes already exist):', error.message);
     }
 
-    // Seed rating options (always run - these are configuration, not sample data)
+    // Execute migration for user signature if it exists
     try {
-      console.log('🔗 Seeding rating options...');
-      const ratingOptionsSeedPath = path.join(__dirname, '../database/seed_rating_options.sql');
-      if (fs.existsSync(ratingOptionsSeedPath)) {
-        const ratingOptionsSeedSQL = fs.readFileSync(ratingOptionsSeedPath, 'utf8');
-        await pool.query(ratingOptionsSeedSQL);
-        console.log('✅ Rating options seeded successfully!');
+      const migrationPath = path.join(__dirname, '../database/migration_add_user_signature.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running user signature migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ User signature migration executed successfully!');
       }
     } catch (error) {
-      console.error('⚠️  Error seeding rating options (this is okay if options already exist):', error.message);
+      console.log('⚠️  Migration error (may be okay if column already exists):', error.message);
+    }
+
+    // Execute migration to remove rating_value constraint if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_remove_rating_value_constraint.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running rating value constraint removal migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Rating value constraint removal migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if constraint already removed):', error.message);
     }
 
     // Seed Power Automate URLs (always run - these are configuration, not sample data)
@@ -201,14 +214,28 @@ async function setupDatabase() {
       console.error('⚠️  Error seeding Power Automate URLs (this is okay if URLs already exist):', error.message);
     }
     
-    // Ask if user wants to seed sample data
+    // Ask if user wants to seed data (including rating options and sample data)
     const readline = require('readline').createInterface({
       input: process.stdin,
       output: process.stdout
     });
 
-    readline.question('\n❓ Do you want to seed the database with sample data? (y/n): ', async (answer) => {
+    readline.question('\n❓ Do you want to seed the database with data? This includes rating options and sample data. (y/n): ', async (answer) => {
       if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
+        // Seed rating options
+        try {
+          console.log('🔗 Seeding rating options...');
+          const ratingOptionsSeedPath = path.join(__dirname, '../database/seed_rating_options.sql');
+          if (fs.existsSync(ratingOptionsSeedPath)) {
+            const ratingOptionsSeedSQL = fs.readFileSync(ratingOptionsSeedPath, 'utf8');
+            await pool.query(ratingOptionsSeedSQL);
+            console.log('✅ Rating options seeded successfully!');
+          }
+        } catch (error) {
+          console.error('⚠️  Error seeding rating options (this is okay if options already exist):', error.message);
+        }
+
+        // Seed sample data
         try {
           console.log('🌱 Seeding database with sample data...');
           const seedPath = path.join(__dirname, '../database/seed.sql');
@@ -218,6 +245,8 @@ async function setupDatabase() {
         } catch (error) {
           console.error('⚠️  Error seeding data (this is okay if data already exists):', error.message);
         }
+      } else {
+        console.log('⏭️  Skipping data seeding. You can run this later if needed.');
       }
       
       await pool.end();

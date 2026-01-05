@@ -3,12 +3,20 @@
 
 -- Create pg_trgm extension first (required for full-text search)
 -- This must be done before creating indexes that use gin_trgm_ops
+-- Note: Extension creation may fail in production if not available or no superuser privileges
+-- This is handled gracefully - the migration will continue with fallback indexes
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'
     ) THEN
-        CREATE EXTENSION pg_trgm;
+        BEGIN
+            CREATE EXTENSION pg_trgm;
+            RAISE NOTICE 'pg_trgm extension created successfully';
+        EXCEPTION
+            WHEN OTHERS THEN
+                RAISE NOTICE 'pg_trgm extension not available or insufficient privileges. Using fallback indexes. Error: %', SQLERRM;
+        END;
     END IF;
 END $$;
 

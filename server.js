@@ -41,7 +41,6 @@ console.log('🌐 CORS allowed origins:', allowedOrigins);
 app.use(cors(corsOptions));
 
 // Explicit OPTIONS handler for preflight
-app.options('*', cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

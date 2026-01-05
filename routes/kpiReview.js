@@ -63,6 +63,26 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
+// Get count of pending reviews (employee_submitted status) for manager
+router.get('/pending/count', authenticateToken, authorizeRoles('manager'), async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT COUNT(*) as count
+       FROM kpi_reviews kr
+       JOIN kpis k ON kr.kpi_id = k.id
+       WHERE kr.manager_id = $1 
+         AND kr.company_id = $2
+         AND kr.review_status = 'employee_submitted'`,
+      [req.user.id, req.user.company_id]
+    );
+
+    res.json({ count: parseInt(result.rows[0].count) || 0 });
+  } catch (error) {
+    console.error('Get pending reviews count error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get KPI review by ID
 router.get('/:id', authenticateToken, async (req, res) => {
   try {

@@ -2,6 +2,9 @@ const express = require('express');
 const { query } = require('../database/db');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 const { sendEmailWithFallback, emailTemplates, shouldSendHRNotification, getHREmails } = require('../services/emailService');
+const { generateAcknowledgedKPIPDF, generateCompletedReviewPDF } = require('../services/pdfService');
+const fs = require('fs');
+const path = require('path');
 const router = express.Router();
 require('dotenv').config();
 
@@ -135,6 +138,230 @@ router.get('/acknowledged-review-pending', authenticateToken, authorizeRoles('ma
   } catch (error) {
     console.error('Get acknowledged-review-pending KPIs error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Download PDF for acknowledged KPI
+// NOTE: This route must come before /:id to avoid route conflicts
+router.get('/:kpiId/download-pdf', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
+  try {
+    const { kpiId } = req.params;
+
+    // Get KPI with all necessary data including signatures
+    // IMPORTANT: 
+    // - k.manager_signature is from kpis table (saved when KPI was created in KPISetting.tsx)
+    // - k.employee_signature is from kpis table (saved when employee acknowledged in KPIAcknowledgement.tsx)
+    // - m.signature and e.signature are from users table (saved profile signatures - used as fallback)
+    const kpiResult = await query(
+      `SELECT k.id, k.employee_id, k.manager_id, k.company_id, k.title, k.description,
+       k.period, k.quarter, k.year, k.meeting_date, k.status,
+       k.manager_signature, k.manager_signed_at,
+       k.employee_signature, k.employee_signed_at,
+       k.created_at, k.updated_at,
+       e.name as employee_name, e.department as employee_department,
+       e.payroll_number as employee_payroll_number, e.position as employee_position,
+       e.signature as employee_user_signature,
+       m.name as manager_name, m.position as manager_position,
+       m.signature as manager_user_signature
+       FROM kpis k
+       JOIN users e ON k.employee_id = e.id
+       JOIN users m ON k.manager_id = m.id
+       WHERE k.id = $1 AND k.company_id = $2`,
+      [kpiId, req.user.company_id]
+    );
+
+    if (kpiResult.rows.length === 0) {
+      return res.status(404).json({ error: 'KPI not found' });
+    }
+
+    const kpi = kpiResult.rows[0];
+
+    // Verify access
+    if (req.user.role === 'manager' && kpi.manager_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Get KPI items
+    const itemsResult = await query(
+      'SELECT * FROM kpi_items WHERE kpi_id = $1 ORDER BY item_order',
+      [kpiId]
+    );
+
+    const kpiItems = itemsResult.rows;
+
+    // IMPORTANT: 
+    // - kpi.manager_signature is from kpis table (saved when manager created KPI in KPISetting.tsx)
+    // - kpi.employee_signature is from kpis table (saved when employee acknowledged in KPIAcknowledgement.tsx)
+    // Both are signatures drawn directly during those actions
+    // Fall back to user profile signatures (manager_user_signature, employee_user_signature) if not available
+    console.log('PDF Generation - Signature Debug:', {
+      kpiId: kpiId,
+      hasKpiManagerSignature: !!kpi.manager_signature,
+      managerSignatureLength: kpi.manager_signature ? kpi.manager_signature.length : 0,
+      hasKpiEmployeeSignature: !!kpi.employee_signature,
+      employeeSignatureLength: kpi.employee_signature ? kpi.employee_signature.length : 0,
+      hasUserManagerSignature: !!kpi.manager_user_signature,
+      hasUserEmployeeSignature: !!kpi.employee_user_signature,
+    });
+
+    // Prepare data for PDF
+    const employeeData = {
+      name: kpi.employee_name,
+      position: kpi.employee_position,
+      department: kpi.employee_department,
+      payroll_number: kpi.employee_payroll_number,
+      signature: kpi.employee_user_signature, // From users table (fallback)
+    };
+
+    const managerData = {
+      name: kpi.manager_name,
+      position: kpi.manager_position,
+      signature: kpi.manager_user_signature, // From users table (fallback)
+    };
+
+    // Log for debugging
+    console.log('PDF Generation - Signature Check:', {
+      kpiId: kpiId,
+      hasKpiManagerSignature: !!kpi.kpi_manager_signature,
+      hasKpiEmployeeSignature: !!kpi.kpi_employee_signature,
+      hasUserManagerSignature: !!kpi.manager_user_signature,
+      hasUserEmployeeSignature: !!kpi.employee_user_signature,
+    });
+
+    // Generate PDF
+    // kpi.manager_signature is from kpis table (saved when KPI was created)
+    // This will be used first, then fall back to managerData.signature (user profile)
+    const { filePath, fileName } = await generateAcknowledgedKPIPDF(
+      kpi, // kpi already has manager_signature from kpis table
+      kpiItems,
+      employeeData,
+      managerData
+    );
+
+    // Send file to client
+    res.download(filePath, fileName, (err) => {
+      if (err) {
+        console.error('Error sending PDF:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Error downloading PDF' });
+        }
+      } else {
+        // Optionally delete the file after sending (or keep it for caching)
+        // fs.unlinkSync(filePath);
+      }
+    });
+  } catch (error) {
+    console.error('Download PDF error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Download PDF for completed review
+// NOTE: This route must come before /:id to avoid route conflicts
+router.get('/:kpiId/review-download-pdf', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
+  try {
+    const { kpiId } = req.params;
+
+    // Get KPI with all necessary data including signatures
+    const kpiResult = await query(
+      `SELECT k.id, k.employee_id, k.manager_id, k.company_id, k.title, k.description,
+       k.period, k.quarter, k.year, k.meeting_date, k.status,
+       k.manager_signature, k.manager_signed_at,
+       k.employee_signature, k.employee_signed_at,
+       k.created_at, k.updated_at,
+       e.name as employee_name, e.department as employee_department,
+       e.payroll_number as employee_payroll_number, e.position as employee_position,
+       e.signature as employee_user_signature,
+       m.name as manager_name, m.position as manager_position,
+       m.signature as manager_user_signature
+       FROM kpis k
+       JOIN users e ON k.employee_id = e.id
+       JOIN users m ON k.manager_id = m.id
+       WHERE k.id = $1 AND k.company_id = $2`,
+      [kpiId, req.user.company_id]
+    );
+
+    if (kpiResult.rows.length === 0) {
+      return res.status(404).json({ error: 'KPI not found' });
+    }
+
+    const kpi = kpiResult.rows[0];
+
+    // Verify access
+    if (req.user.role === 'manager' && kpi.manager_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Get review data
+    const reviewResult = await query(
+      `SELECT kr.*, 
+       kr.employee_signature as review_employee_signature,
+       kr.manager_signature as review_manager_signature
+       FROM kpi_reviews kr
+       WHERE kr.kpi_id = $1 AND kr.company_id = $2
+       AND (kr.review_status = 'manager_submitted' OR kr.review_status = 'completed')
+       ORDER BY kr.updated_at DESC
+       LIMIT 1`,
+      [kpiId, req.user.company_id]
+    );
+
+    if (reviewResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Review not found or not completed' });
+    }
+
+    const review = reviewResult.rows[0];
+
+    // Get KPI items
+    const itemsResult = await query(
+      'SELECT * FROM kpi_items WHERE kpi_id = $1 ORDER BY item_order',
+      [kpiId]
+    );
+
+    const kpiItems = itemsResult.rows;
+
+    // Prepare data for PDF
+    const employeeData = {
+      name: kpi.employee_name,
+      position: kpi.employee_position,
+      department: kpi.employee_department,
+      payroll_number: kpi.employee_payroll_number,
+      signature: kpi.employee_user_signature, // From users table (fallback)
+    };
+
+    const managerData = {
+      name: kpi.manager_name,
+      position: kpi.manager_position,
+      signature: kpi.manager_user_signature, // From users table (fallback)
+    };
+
+    // Prepare review data with signatures
+    const reviewData = {
+      ...review,
+      manager_signature: review.review_manager_signature || kpi.manager_signature, // Prioritize review signature
+      employee_signature: review.review_employee_signature || kpi.employee_signature, // Prioritize review signature
+    };
+
+    // Generate PDF
+    const { filePath, fileName } = await generateCompletedReviewPDF(
+      kpi,
+      kpiItems,
+      reviewData,
+      employeeData,
+      managerData
+    );
+
+    // Send file to client
+    res.download(filePath, fileName, (err) => {
+      if (err) {
+        console.error('Error sending PDF:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Error sending PDF file' });
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Download review PDF error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 

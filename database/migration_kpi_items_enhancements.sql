@@ -25,7 +25,7 @@ END $$;
 CREATE TABLE IF NOT EXISTS rating_options (
     id SERIAL PRIMARY KEY,
     company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
-    rating_value DECIMAL(3,2) NOT NULL CHECK (rating_value IN (1.00, 1.25, 1.50)),
+    rating_value DECIMAL(3,2) NOT NULL,
     label VARCHAR(100) NOT NULL,
     description TEXT,
     is_active BOOLEAN DEFAULT true,

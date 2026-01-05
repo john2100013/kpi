@@ -158,7 +158,7 @@ router.get('/me', authenticateToken, async (req, res) => {
     const userCompanies = companiesResult.rows;
 
     const result = await query(
-      'SELECT id, name, email, role, payroll_number, national_id, department, position, employment_date, manager_id, company_id FROM users WHERE id = $1',
+      'SELECT id, name, email, role, payroll_number, national_id, department, position, employment_date, manager_id, company_id, signature FROM users WHERE id = $1',
       [req.user.id]
     );
 
@@ -174,6 +174,113 @@ router.get('/me', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get user error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update user profile (including signature)
+router.put('/profile', authenticateToken, async (req, res) => {
+  try {
+    const { signature } = req.body;
+    const userId = req.user.id;
+
+    // Update user signature
+    if (signature !== undefined) {
+      await query(
+        'UPDATE users SET signature = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        [signature, userId]
+      );
+    }
+
+    // Fetch updated user
+    const result = await query(
+      'SELECT id, name, email, role, payroll_number, national_id, department, position, employment_date, manager_id, company_id, signature FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const { password_hash, ...user } = result.rows[0];
+    res.json({ 
+      message: 'Profile updated successfully',
+      user
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Change password (for HR, Manager, and Super Admin only)
+router.put('/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { oldPassword, newPassword, confirmPassword } = req.body;
+    const userId = req.user.id;
+
+    // Validate role - only HR, Manager, and Super Admin can change passwords
+    if (!['hr', 'manager', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Password change is only available for HR, Manager, and Super Admin roles' });
+    }
+
+    // Validate input
+    if (!oldPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({ error: 'Old password, new password, and confirm password are required' });
+    }
+
+    // Check if new password and confirm password match
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ error: 'New password and confirm password do not match' });
+    }
+
+    // Validate new password strength (minimum 6 characters)
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+
+    // Check if new password is different from old password
+    if (oldPassword === newPassword) {
+      return res.status(400).json({ error: 'New password must be different from old password' });
+    }
+
+    // Get current user with password hash
+    const userResult = await query(
+      'SELECT id, password_hash FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Verify old password
+    if (!user.password_hash) {
+      return res.status(400).json({ error: 'No password set for this account. Please contact administrator.' });
+    }
+
+    const validPassword = await bcrypt.compare(oldPassword, user.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Old password is incorrect' });
+    }
+
+    // Hash new password
+    const saltRounds = 10;
+    const newPasswordHash = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update password
+    await query(
+      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [newPasswordHash, userId]
+    );
+
+    res.json({ 
+      message: 'Password changed successfully'
+    });
+  } catch (error) {
+    console.error('Change password error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
