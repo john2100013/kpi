@@ -41,27 +41,21 @@ const generateAcknowledgedKPIPDF = async (kpiData, kpiItems, employeeData, manag
       doc.fillColor('#000000');
       doc.y = 120;
 
-      // Employee Information Box
-      doc.rect(50, doc.y, 240, 80).fillAndStroke('#DBEAFE', '#1E40AF'); // Light blue background
+      // Employee Information (No box, just text)
       doc.fillColor('#1E40AF').fontSize(14).font('Helvetica-Bold');
-      doc.text('Employee Information', 55, doc.y + 5);
+      doc.text('Employee Information', 50, doc.y);
       doc.fillColor('#000000').fontSize(11).font('Helvetica');
-      doc.text(`Name: ${employeeData.name || 'N/A'}`, 55, doc.y + 20);
-      doc.text(`Position: ${employeeData.position || 'N/A'}`, 55, doc.y + 32);
-      doc.text(`Department: ${employeeData.department || 'N/A'}`, 55, doc.y + 44);
-      doc.text(`Payroll: ${employeeData.payroll_number || 'N/A'}`, 55, doc.y + 56);
+      doc.y += 15;
+      doc.text(`Name: ${employeeData.name || 'N/A'}`, 50, doc.y);
+      doc.y += 12;
+      doc.text(`Department: ${employeeData.department || 'N/A'}`, 50, doc.y);
+      doc.y += 12;
+      doc.text(`Payroll: ${employeeData.payroll_number || 'N/A'}`, 50, doc.y);
+      doc.y += 12;
       if (kpiData.meeting_date) {
-        doc.text(`Meeting: ${new Date(kpiData.meeting_date).toLocaleDateString()}`, 55, doc.y + 68);
+        doc.text(`Meeting: ${new Date(kpiData.meeting_date).toLocaleDateString()}`, 50, doc.y);
+        doc.y += 12;
       }
-      doc.y += 90;
-
-      // Manager Information Box
-      doc.rect(310, doc.y - 90, 240, 80).fillAndStroke('#F3E8FF', '#7C3AED'); // Light purple background
-      doc.fillColor('#7C3AED').fontSize(14).font('Helvetica-Bold');
-      doc.text('Manager Information', 315, doc.y - 85);
-      doc.fillColor('#000000').fontSize(11).font('Helvetica');
-      doc.text(`Name: ${managerData.name || 'N/A'}`, 315, doc.y - 70);
-      doc.text(`Position: ${managerData.position || 'N/A'}`, 315, doc.y - 58);
       doc.y += 10;
 
       // KPI Items Table
@@ -72,7 +66,8 @@ const generateAcknowledgedKPIPDF = async (kpiData, kpiItems, employeeData, manag
       if (kpiItems.length > 0) {
         // Table dimensions - A4 page width is 595 points, with 50 margin each side = 495 available
         const tableTop = doc.y;
-        const rowHeight = 30; // Increased for better readability
+        const rowHeight = 30; // Data row height
+        const headerHeight = 40; // Taller header to fit multi-line text
         // Column widths proportionally adjusted to fit within 495 points
         const colWidths = [25, 90, 110, 75, 60, 55, 75, 55]; // Total: 545, but we'll use landscape or scale
         const tableLeft = 50;
@@ -81,32 +76,21 @@ const generateAcknowledgedKPIPDF = async (kpiData, kpiItems, employeeData, manag
         const scaledWidths = colWidths.map(w => w * scaleFactor);
         
         // Header row with purple background
-        doc.rect(tableLeft, tableTop, tableWidth, rowHeight).fillAndStroke('#4F46E5', '#1E1B4B');
+        doc.rect(tableLeft, tableTop, tableWidth, headerHeight).fillAndStroke('#4F46E5', '#1E1B4B');
         doc.fillColor('#FFFFFF').fontSize(8).font('Helvetica-Bold');
         
         const headers = ['#', 'KPI TITLE', 'DESCRIPTION', 'CURRENT PERFORMANCE STATUS', 'TARGET VALUE', 'MEASURE UNIT', 'EXPECTED COMPLETION DATE', 'GOAL WEIGHT'];
         let xPos = tableLeft + 3;
         headers.forEach((header, i) => {
-          doc.text(header.toUpperCase(), xPos, tableTop + 8, { width: scaledWidths[i] - 6, align: 'left' });
+          doc.text(header.toUpperCase(), xPos, tableTop + 10, { width: scaledWidths[i] - 6, align: 'left' });
           xPos += scaledWidths[i];
         });
         
         doc.fillColor('#000000');
-        let currentY = tableTop + rowHeight;
+        let currentY = tableTop + headerHeight;
         
         // Data rows
         kpiItems.forEach((item, index) => {
-          // Alternate row colors for better readability
-          if (index % 2 === 0) {
-            doc.rect(tableLeft, currentY, tableWidth, rowHeight).fillColor('#F9FAFB').fill();
-          } else {
-            doc.rect(tableLeft, currentY, tableWidth, rowHeight).fillColor('#FFFFFF').fill();
-          }
-          doc.fillColor('#000000');
-          
-          // Draw row border
-          doc.rect(tableLeft, currentY, tableWidth, rowHeight).stroke();
-          
           xPos = tableLeft + 3;
           doc.fontSize(8).font('Helvetica');
           
@@ -122,23 +106,58 @@ const generateAcknowledgedKPIPDF = async (kpiData, kpiItems, employeeData, manag
             item.goal_weight || 'N/A'
           ];
           
+          // Calculate dynamic row height based on text content
+          let maxCellHeight = 10; // Minimum height
           rowData.forEach((data, i) => {
             const cellText = String(data);
-            // For description column, allow more text
+            const cellWidth = scaledWidths[i] - 6;
+            const textHeight = doc.heightOfString(cellText, {
+              width: cellWidth,
+              align: 'left'
+            });
+            maxCellHeight = Math.max(maxCellHeight, textHeight);
+          });
+          
+          const dynamicRowHeight = Math.max(rowHeight, maxCellHeight + 10); // Add padding
+          
+          // Alternate row colors for better readability
+          if (index % 2 === 0) {
+            doc.rect(tableLeft, currentY, tableWidth, dynamicRowHeight).fillColor('#F9FAFB').fill();
+          } else {
+            doc.rect(tableLeft, currentY, tableWidth, dynamicRowHeight).fillColor('#FFFFFF').fill();
+          }
+          doc.fillColor('#000000');
+          
+          // Draw row border
+          doc.rect(tableLeft, currentY, tableWidth, dynamicRowHeight).stroke();
+          
+          // Draw cell content
+          xPos = tableLeft + 3;
+          rowData.forEach((data, i) => {
+            const cellText = String(data);
             doc.text(cellText, xPos, currentY + 5, { 
               width: scaledWidths[i] - 6, 
-              align: 'left',
-              ellipsis: true
+              align: 'left'
             });
             xPos += scaledWidths[i];
           });
           
-          currentY += rowHeight;
+          currentY += dynamicRowHeight;
           
           // Add new page if needed (leave space for signatures)
           if (currentY > 650) {
             doc.addPage();
             currentY = 50;
+            // Redraw header
+            doc.rect(tableLeft, currentY, tableWidth, headerHeight).fillAndStroke('#4F46E5', '#1E1B4B');
+            doc.fillColor('#FFFFFF').fontSize(8).font('Helvetica-Bold');
+            xPos = tableLeft + 3;
+            headers.forEach((header, i) => {
+              doc.text(header.toUpperCase(), xPos, currentY + 10, { width: scaledWidths[i] - 6, align: 'left' });
+              xPos += scaledWidths[i];
+            });
+            doc.fillColor('#000000');
+            currentY += headerHeight;
           }
         });
         
@@ -152,16 +171,76 @@ const generateAcknowledgedKPIPDF = async (kpiData, kpiItems, employeeData, manag
       }
 
       // Signatures Section
-      doc.addPage();
-      doc.fontSize(16).font('Helvetica-Bold').text('Signatures', { underline: true });
-      doc.moveDown(2);
+      // Check if we need a new page or can fit on current page
+      if (doc.y > 450) {
+        doc.addPage();
+      } else {
+        doc.moveDown(1);
+      }
+      const signaturesTitleY = doc.y;
+      doc.fontSize(16).font('Helvetica-Bold').text('Signatures', 50, signaturesTitleY, { underline: true });
+      doc.moveDown(1.5);
 
-      // Employee Signature Box
-      doc.rect(50, doc.y, 240, 120).fillAndStroke('#DBEAFE', '#1E40AF');
-      doc.fillColor('#1E40AF').fontSize(12).font('Helvetica-Bold');
-      doc.text('Employee Signature', 55, doc.y + 5);
+      // Manager Signature Box (First - Vertically Stacked)
+      const managerSignatureBoxY = doc.y;
+      doc.rect(50, managerSignatureBoxY, 495, 120).fillAndStroke('#F3E8FF', '#7C3AED');
+      doc.fillColor('#7C3AED').fontSize(12).font('Helvetica-Bold');
+      doc.text('Manager Signature', 55, managerSignatureBoxY + 5);
+      doc.fillColor('#000000');
+      doc.y = managerSignatureBoxY + 20;
+      
+      // Use signature from KPI (setting) or from user profile
+      // IMPORTANT: Check kpiData.manager_signature first (from kpis table when KPI was created)
+      const managerSignature = kpiData.manager_signature || managerData.signature;
+      console.log('Manager signature check:', {
+        fromKPI: !!kpiData.manager_signature,
+        fromUser: !!managerData.signature,
+        kpiId: kpiData.id
+      });
+      
+      if (managerSignature) {
+        try {
+          const signatureBuffer = base64ToBuffer(managerSignature);
+          if (signatureBuffer) {
+            doc.image(signatureBuffer, {
+              fit: [220, 60],
+              align: 'left',
+              x: 55,
+              y: doc.y
+            });
+            doc.y += 65;
+          }
+        } catch (err) {
+          console.error('Error adding manager signature:', err);
+          doc.fontSize(10).font('Helvetica').fillColor('#DC2626').text('Signature image unavailable', { italic: true });
+          doc.fillColor('#000000');
+          doc.y += 20;
+        }
+      } else {
+        doc.fontSize(10).font('Helvetica').fillColor('#DC2626').text('No signature provided', { italic: true });
+        doc.fillColor('#000000');
+        doc.y += 20;
+      }
+      
+      doc.fontSize(10).font('Helvetica');
+      doc.text(`Name: ${managerData.name || 'N/A'}`, 55, doc.y);
+      doc.y += 12;
+      if (kpiData.manager_signed_at) {
+        doc.text(`Date: ${new Date(kpiData.manager_signed_at).toLocaleDateString()}`, 55, doc.y);
+        doc.y += 12;
+      }
+      doc.fontSize(9).font('Helvetica').fillColor('#6B7280');
+      doc.text(`Generated on: ${new Date().toLocaleString()}`, 55, doc.y);
       doc.fillColor('#000000');
       doc.y += 20;
+
+      // Employee Signature Box (Second - Vertically Stacked Below Manager)
+      const employeeSignatureBoxY = doc.y;
+      doc.rect(50, employeeSignatureBoxY, 495, 120).fillAndStroke('#DBEAFE', '#1E40AF');
+      doc.fillColor('#1E40AF').fontSize(12).font('Helvetica-Bold');
+      doc.text('Employee Signature', 55, employeeSignatureBoxY + 5);
+      doc.fillColor('#000000');
+      doc.y = employeeSignatureBoxY + 20;
       
       // IMPORTANT: Use signature from KPI (acknowledgement) first
       // This is the signature drawn directly when employee acknowledged in KPIAcknowledgement.tsx
@@ -201,64 +280,8 @@ const generateAcknowledgedKPIPDF = async (kpiData, kpiItems, employeeData, manag
       doc.y += 12;
       if (kpiData.employee_signed_at) {
         doc.text(`Date: ${new Date(kpiData.employee_signed_at).toLocaleDateString()}`, 55, doc.y);
-        doc.y += 12;
+        doc.y += 10;
       }
-      doc.y += 10;
-
-      // Manager Signature Box
-      doc.rect(310, doc.y - 120, 240, 120).fillAndStroke('#F3E8FF', '#7C3AED');
-      doc.fillColor('#7C3AED').fontSize(12).font('Helvetica-Bold');
-      doc.text('Manager Signature', 315, doc.y - 115);
-      doc.fillColor('#000000');
-      const managerSignatureY = doc.y - 95;
-      doc.y = managerSignatureY;
-      
-      // Use signature from KPI (setting) or from user profile
-      // IMPORTANT: Check kpiData.manager_signature first (from kpis table when KPI was created)
-      const managerSignature = kpiData.manager_signature || managerData.signature;
-      console.log('Manager signature check:', {
-        fromKPI: !!kpiData.manager_signature,
-        fromUser: !!managerData.signature,
-        kpiId: kpiData.id
-      });
-      
-      if (managerSignature) {
-        try {
-          const signatureBuffer = base64ToBuffer(managerSignature);
-          if (signatureBuffer) {
-            doc.image(signatureBuffer, {
-              fit: [220, 60],
-              align: 'left',
-              x: 315,
-              y: doc.y
-            });
-            doc.y += 65;
-          }
-        } catch (err) {
-          console.error('Error adding manager signature:', err);
-          doc.fontSize(10).font('Helvetica').fillColor('#DC2626').text('Signature image unavailable', { italic: true });
-          doc.fillColor('#000000');
-          doc.y += 20;
-        }
-      } else {
-        doc.fontSize(10).font('Helvetica').fillColor('#DC2626').text('No signature provided', { italic: true });
-        doc.fillColor('#000000');
-        doc.y += 20;
-      }
-      
-      doc.fontSize(10).font('Helvetica');
-      doc.text(`Name: ${managerData.name || 'N/A'}`, 315, doc.y);
-      doc.y += 12;
-      if (kpiData.manager_signed_at) {
-        doc.text(`Date: ${new Date(kpiData.manager_signed_at).toLocaleDateString()}`, 315, doc.y);
-        doc.y += 12;
-      }
-
-      // Footer
-      doc.fontSize(10).font('Helvetica').text(
-        `Generated on: ${new Date().toLocaleString()}`,
-        { align: 'center' }
-      );
 
       doc.end();
 
@@ -472,31 +495,44 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
       doc.fillColor('#000000');
       doc.y = 120;
 
-      // Employee Information Box
-      doc.rect(50, doc.y, 240, 80).fillAndStroke('#DBEAFE', '#1E40AF'); // Light blue background
-      doc.fillColor('#1E40AF').fontSize(14).font('Helvetica-Bold');
-      doc.text('Employee Information', 55, doc.y + 5);
+      // Employee Information (NO background box)
+      doc.fontSize(14).font('Helvetica-Bold').fillColor('#1E40AF');
+      doc.text('Employee Information', 50, doc.y);
       doc.fillColor('#000000').fontSize(11).font('Helvetica');
-      doc.text(`Name: ${employeeData.name || 'N/A'}`, 55, doc.y + 20);
-      doc.text(`Position: ${employeeData.position || 'N/A'}`, 55, doc.y + 32);
-      doc.text(`Department: ${employeeData.department || 'N/A'}`, 55, doc.y + 44);
-      doc.text(`Payroll: ${employeeData.payroll_number || 'N/A'}`, 55, doc.y + 56);
-      if (kpiData.meeting_date) {
-        doc.text(`Meeting: ${new Date(kpiData.meeting_date).toLocaleDateString()}`, 55, doc.y + 68);
-      }
-      doc.y += 90;
 
-      // Manager Information Box
-      doc.rect(310, doc.y - 90, 240, 80).fillAndStroke('#F3E8FF', '#7C3AED'); // Light purple background
-      doc.fillColor('#7C3AED').fontSize(14).font('Helvetica-Bold');
-      doc.text('Manager Information', 315, doc.y - 85);
-      doc.fillColor('#000000').fontSize(11).font('Helvetica');
-      doc.text(`Name: ${managerData.name || 'N/A'}`, 315, doc.y - 70);
-      doc.text(`Position: ${managerData.position || 'N/A'}`, 315, doc.y - 58);
-      if (reviewData.manager_signed_at) {
-        doc.text(`Review Date: ${new Date(reviewData.manager_signed_at).toLocaleDateString()}`, 315, doc.y - 46);
+      const employeeInfoY = doc.y + 16;
+      // Name on the left
+      doc.text(`Name: ${employeeData.name || 'N/A'}`, 50, employeeInfoY);
+      // Position and Department below, on the left
+      doc.text(`Position: ${employeeData.position || 'N/A'}`, 50, employeeInfoY + 14);
+      doc.text(`Department: ${employeeData.department || 'N/A'}`, 50, employeeInfoY + 28);
+      // Payroll directly under Department
+      doc.text(`Payroll: ${employeeData.payroll_number || 'N/A'}`, 50, employeeInfoY + 42);
+      if (kpiData.meeting_date) {
+        doc.text(
+          `Meeting: ${new Date(kpiData.meeting_date).toLocaleDateString()}`,
+          50,
+          employeeInfoY + 56
+        );
       }
-      doc.y += 10;
+      doc.y = employeeInfoY + 72;
+
+      // Manager Information (NO background box to avoid box behind tables)
+      doc.fontSize(14).font('Helvetica-Bold').fillColor('#1E40AF');
+      doc.text('Manager Information', 50, doc.y);
+      doc.fillColor('#000000').fontSize(11).font('Helvetica');
+
+      const managerInfoY = doc.y + 16;
+      doc.text(`Name: ${managerData.name || 'N/A'}`, 50, managerInfoY);
+      doc.text(`Position: ${managerData.position || 'N/A'}`, 50, managerInfoY + 14);
+      if (reviewData.manager_signed_at) {
+        doc.text(
+          `Review Date: ${new Date(reviewData.manager_signed_at).toLocaleDateString()}`,
+          50,
+          managerInfoY + 28
+        );
+      }
+      doc.y = managerInfoY + 40;
 
       // Parse employee and manager ratings/comments from JSON
       let employeeItemRatings = {};
@@ -533,15 +569,20 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
       }
 
       // KPI Review Items Table
-      doc.fontSize(16).font('Helvetica-Bold').fillColor('#1E40AF').text('KPI Review & Rating', { underline: true });
+      // Move header explicitly to the left (no centering)
+      doc.fontSize(16)
+        .font('Helvetica-Bold')
+        .fillColor('#1E40AF')
+        .text('KPI Review & Rating', 50, doc.y, { underline: true });
       doc.fillColor('#000000');
-      doc.moveDown(0.5);
+      doc.moveDown(0.8);
 
       if (kpiItems.length > 0) {
         // Split into two tables: Basic Info + Ratings & Comments
         // Table 1: Basic KPI Information (8 columns)
         const tableTop = doc.y;
-        const rowHeight = 30;
+        const rowHeight = 30;      // Data row height
+        const headerHeight = 40;   // Taller header to fit multi-line text
         const tableLeft = 50;
         const tableWidth = 495; // A4 width minus margins
         
@@ -553,29 +594,21 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
         const tableWidth1 = scaledWidths1.reduce((sum, w) => sum + w, 0);
         
         // Header row for Table 1
-        doc.rect(tableLeft, tableTop, tableWidth1, rowHeight).fillAndStroke('#4F46E5', '#1E1B4B');
+        doc.rect(tableLeft, tableTop, tableWidth1, headerHeight).fillAndStroke('#4F46E5', '#1E1B4B');
         doc.fillColor('#FFFFFF').fontSize(8).font('Helvetica-Bold');
         
         const headers1 = ['#', 'KPI TITLE', 'DESCRIPTION', 'CURRENT PERFORMANCE STATUS', 'TARGET VALUE', 'MEASURE UNIT', 'EXPECTED COMPLETION DATE', 'GOAL WEIGHT'];
         let xPos = tableLeft + 3;
         headers1.forEach((header, i) => {
-          doc.text(header.toUpperCase(), xPos, tableTop + 8, { width: scaledWidths1[i] - 6, align: 'left' });
+          doc.text(header.toUpperCase(), xPos, tableTop + 10, { width: scaledWidths1[i] - 6, align: 'left' });
           xPos += scaledWidths1[i];
         });
         
         doc.fillColor('#000000');
-        let currentY = tableTop + rowHeight;
+        let currentY = tableTop + headerHeight;
         
         // Data rows for Table 1
         kpiItems.forEach((item, index) => {
-          if (index % 2 === 0) {
-            doc.rect(tableLeft, currentY, tableWidth1, rowHeight).fillColor('#F9FAFB').fill();
-          } else {
-            doc.rect(tableLeft, currentY, tableWidth1, rowHeight).fillColor('#FFFFFF').fill();
-          }
-          doc.fillColor('#000000');
-          doc.rect(tableLeft, currentY, tableWidth1, rowHeight).stroke();
-          
           xPos = tableLeft + 3;
           doc.fontSize(8).font('Helvetica');
           
@@ -590,32 +623,56 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
             item.goal_weight || 'N/A'
           ];
           
+          // Calculate dynamic row height based on text content
+          let maxCellHeight = 10; // Minimum height
+          rowData1.forEach((data, i) => {
+            const cellText = String(data);
+            const cellWidth = scaledWidths1[i] - 6;
+            const textHeight = doc.heightOfString(cellText, {
+              width: cellWidth,
+              align: 'left'
+            });
+            maxCellHeight = Math.max(maxCellHeight, textHeight);
+          });
+          
+          const dynamicRowHeight = Math.max(rowHeight, maxCellHeight + 10); // Add padding
+          
+          // Draw row background
+          if (index % 2 === 0) {
+            doc.rect(tableLeft, currentY, tableWidth1, dynamicRowHeight).fillColor('#F9FAFB').fill();
+          } else {
+            doc.rect(tableLeft, currentY, tableWidth1, dynamicRowHeight).fillColor('#FFFFFF').fill();
+          }
+          doc.fillColor('#000000');
+          doc.rect(tableLeft, currentY, tableWidth1, dynamicRowHeight).stroke();
+          
+          // Draw cell content
+          xPos = tableLeft + 3;
           rowData1.forEach((data, i) => {
             const cellText = String(data);
             doc.text(cellText, xPos, currentY + 5, { 
               width: scaledWidths1[i] - 6, 
-              align: 'left',
-              ellipsis: true
+              align: 'left'
             });
             xPos += scaledWidths1[i];
           });
           
-          currentY += rowHeight;
+          currentY += dynamicRowHeight;
           
           // Check if we need a new page
           if (currentY > 650) {
             doc.addPage();
             currentY = 50;
             // Redraw header
-            doc.rect(tableLeft, currentY, tableWidth1, rowHeight).fillAndStroke('#4F46E5', '#1E1B4B');
+            doc.rect(tableLeft, currentY, tableWidth1, headerHeight).fillAndStroke('#4F46E5', '#1E1B4B');
             doc.fillColor('#FFFFFF').fontSize(8).font('Helvetica-Bold');
             xPos = tableLeft + 3;
             headers1.forEach((header, i) => {
-              doc.text(header.toUpperCase(), xPos, currentY + 8, { width: scaledWidths1[i] - 6, align: 'left' });
+              doc.text(header.toUpperCase(), xPos, currentY + 10, { width: scaledWidths1[i] - 6, align: 'left' });
               xPos += scaledWidths1[i];
             });
             doc.fillColor('#000000');
-            currentY += rowHeight;
+            currentY += headerHeight;
           }
         });
         
@@ -631,7 +688,7 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
         const tableWidth2 = scaledWidths2.reduce((sum, w) => sum + w, 0);
         
         // Header row for Table 2
-        doc.rect(tableLeft, tableTop2, tableWidth2, rowHeight).fillAndStroke('#7C3AED', '#4C1D95');
+        doc.rect(tableLeft, tableTop2, tableWidth2, rowHeight).fillAndStroke('#4F46E5', '#1E1B4B');
         doc.fillColor('#FFFFFF').fontSize(8).font('Helvetica-Bold');
         
         const headers2 = ['#', 'EMPLOYEE SELF RATING', 'EMPLOYEE COMMENT', 'MANAGER RATING', 'MANAGER COMMENT'];
@@ -651,14 +708,6 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
           const mgrRating = managerItemRatings[item.id] || 0;
           const mgrComment = managerItemComments[item.id] || '';
           
-          if (index % 2 === 0) {
-            doc.rect(tableLeft, currentY, tableWidth2, rowHeight).fillColor('#F9FAFB').fill();
-          } else {
-            doc.rect(tableLeft, currentY, tableWidth2, rowHeight).fillColor('#FFFFFF').fill();
-          }
-          doc.fillColor('#000000');
-          doc.rect(tableLeft, currentY, tableWidth2, rowHeight).stroke();
-          
           xPos = tableLeft + 3;
           doc.fontSize(8).font('Helvetica');
           
@@ -670,24 +719,48 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
             mgrComment || 'N/A'
           ];
           
+          // Calculate dynamic row height based on text content (especially comments)
+          let maxCellHeight = 10; // Minimum height
+          rowData2.forEach((data, i) => {
+            const cellText = String(data);
+            const cellWidth = scaledWidths2[i] - 6;
+            const textHeight = doc.heightOfString(cellText, {
+              width: cellWidth,
+              align: 'left'
+            });
+            maxCellHeight = Math.max(maxCellHeight, textHeight);
+          });
+          
+          const dynamicRowHeight = Math.max(rowHeight, maxCellHeight + 10); // Add padding
+          
+          // Draw row background
+          if (index % 2 === 0) {
+            doc.rect(tableLeft, currentY, tableWidth2, dynamicRowHeight).fillColor('#F9FAFB').fill();
+          } else {
+            doc.rect(tableLeft, currentY, tableWidth2, dynamicRowHeight).fillColor('#FFFFFF').fill();
+          }
+          doc.fillColor('#000000');
+          doc.rect(tableLeft, currentY, tableWidth2, dynamicRowHeight).stroke();
+          
+          // Draw cell content
+          xPos = tableLeft + 3;
           rowData2.forEach((data, i) => {
             const cellText = String(data);
             doc.text(cellText, xPos, currentY + 5, { 
               width: scaledWidths2[i] - 6, 
-              align: 'left',
-              ellipsis: true
+              align: 'left'
             });
             xPos += scaledWidths2[i];
           });
           
-          currentY += rowHeight;
+          currentY += dynamicRowHeight;
           
           // Check if we need a new page
           if (currentY > 650) {
             doc.addPage();
             currentY = 50;
             // Redraw header
-            doc.rect(tableLeft, currentY, tableWidth2, rowHeight).fillAndStroke('#7C3AED', '#4C1D95');
+            doc.rect(tableLeft, currentY, tableWidth2, rowHeight).fillAndStroke('#4F46E5', '#1E1B4B');
             doc.fillColor('#FFFFFF').fontSize(8).font('Helvetica-Bold');
             xPos = tableLeft + 3;
             headers2.forEach((header, i) => {
@@ -709,71 +782,45 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
 
       // Overall Manager Comments
       if (reviewData.overall_manager_comment) {
-        doc.addPage();
-        doc.fontSize(16).font('Helvetica-Bold').fillColor('#1E40AF').text('Overall Manager Comments', { underline: true });
+        // Check if we need a new page or can fit on current page
+        if (doc.y > 500) {
+          doc.addPage();
+        } else {
+          doc.moveDown(1);
+        }
+        // Force the heading to start from the left margin
+        const overallCommentsTitleY = doc.y;
+        doc.fontSize(16)
+          .font('Helvetica-Bold')
+          .fillColor('#1E40AF')
+          .text('Overall Manager Comments', 50, overallCommentsTitleY, { underline: true });
         doc.fillColor('#000000');
         doc.moveDown(0.5);
         doc.fontSize(11).font('Helvetica').text(reviewData.overall_manager_comment, {
           width: 495,
           align: 'left'
         });
-        doc.moveDown(2);
+        doc.moveDown(1.5);
+      } else {
+        // If no overall comment, ensure we have space for signatures
+        if (doc.y > 500) {
+          doc.addPage();
+        } else {
+          doc.moveDown(1);
+        }
       }
 
       // Signatures Section
-      doc.addPage();
       doc.fontSize(16).font('Helvetica-Bold').text('Signatures', { underline: true });
-      doc.moveDown(2);
+      doc.moveDown(1.5);
 
-      // Employee Signature Box
-      doc.rect(50, doc.y, 240, 120).fillAndStroke('#DBEAFE', '#1E40AF');
-      doc.fillColor('#1E40AF').fontSize(12).font('Helvetica-Bold');
-      doc.text('Employee Signature', 55, doc.y + 5);
-      doc.fillColor('#000000');
-      doc.y += 20;
-      
-      // Use signature from review (self-rating) or from KPI (acknowledgement) or from user profile
-      const employeeSignature = reviewData.employee_signature || kpiData.employee_signature || employeeData.signature;
-      if (employeeSignature) {
-        try {
-          const signatureBuffer = base64ToBuffer(employeeSignature);
-          if (signatureBuffer) {
-            doc.image(signatureBuffer, {
-              fit: [220, 60],
-              align: 'left',
-              x: 55,
-              y: doc.y
-            });
-            doc.y += 65;
-          }
-        } catch (err) {
-          console.error('Error adding employee signature:', err);
-          doc.fontSize(10).font('Helvetica').fillColor('#DC2626').text('Signature image unavailable', { italic: true });
-          doc.fillColor('#000000');
-          doc.y += 20;
-        }
-      } else {
-        doc.fontSize(10).font('Helvetica').fillColor('#DC2626').text('No signature provided', { italic: true });
-        doc.fillColor('#000000');
-        doc.y += 20;
-      }
-      
-      doc.fontSize(10).font('Helvetica');
-      doc.text(`Name: ${employeeData.name || 'N/A'}`, 55, doc.y);
-      doc.y += 12;
-      if (reviewData.employee_signed_at || kpiData.employee_signed_at) {
-        const signedDate = reviewData.employee_signed_at || kpiData.employee_signed_at;
-        doc.text(`Date: ${new Date(signedDate).toLocaleDateString()}`, 55, doc.y);
-        doc.y += 10;
-      }
-
-      // Manager Signature Box
-      doc.rect(310, doc.y - 120, 240, 120).fillAndStroke('#F3E8FF', '#7C3AED');
+      // Manager Signature Box (First)
+      const signatureBoxY = doc.y;
+      doc.rect(50, signatureBoxY, 240, 120).fillAndStroke('#F3E8FF', '#7C3AED');
       doc.fillColor('#7C3AED').fontSize(12).font('Helvetica-Bold');
-      doc.text('Manager Signature', 315, doc.y - 115);
+      doc.text('Manager Signature', 55, signatureBoxY + 5);
       doc.fillColor('#000000');
-      const managerSignatureY = doc.y - 95;
-      doc.y = managerSignatureY;
+      doc.y = signatureBoxY + 20;
       
       // Use signature from review (manager review) or from KPI (setting) or from user profile
       const managerSignature = reviewData.manager_signature || kpiData.manager_signature || managerData.signature;
@@ -784,7 +831,7 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
             doc.image(signatureBuffer, {
               fit: [220, 60],
               align: 'left',
-              x: 315,
+              x: 55,
               y: doc.y
             });
             doc.y += 65;
@@ -802,19 +849,59 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
       }
       
       doc.fontSize(10).font('Helvetica');
-      doc.text(`Name: ${managerData.name || 'N/A'}`, 315, doc.y);
+      doc.text(`Name: ${managerData.name || 'N/A'}`, 55, doc.y);
       doc.y += 12;
       if (reviewData.manager_signed_at || kpiData.manager_signed_at) {
         const signedDate = reviewData.manager_signed_at || kpiData.manager_signed_at;
+        doc.text(`Date: ${new Date(signedDate).toLocaleDateString()}`, 55, doc.y);
+        doc.y += 12;
+      }
+      doc.fontSize(9).font('Helvetica').fillColor('#6B7280');
+      doc.text(`Generated on: ${new Date().toLocaleString()}`, 55, doc.y);
+      doc.fillColor('#000000');
+      doc.y += 10;
+
+      // Employee Signature Box (Second)
+      doc.rect(310, signatureBoxY, 240, 120).fillAndStroke('#DBEAFE', '#1E40AF');
+      doc.fillColor('#1E40AF').fontSize(12).font('Helvetica-Bold');
+      doc.text('Employee Signature', 315, signatureBoxY + 5);
+      doc.fillColor('#000000');
+      doc.y = signatureBoxY + 20;
+      
+      // Use signature from review (self-rating) or from KPI (acknowledgement) or from user profile
+      const employeeSignature = reviewData.employee_signature || kpiData.employee_signature || employeeData.signature;
+      if (employeeSignature) {
+        try {
+          const signatureBuffer = base64ToBuffer(employeeSignature);
+          if (signatureBuffer) {
+            doc.image(signatureBuffer, {
+              fit: [220, 60],
+              align: 'left',
+              x: 315,
+              y: doc.y
+            });
+            doc.y += 65;
+          }
+        } catch (err) {
+          console.error('Error adding employee signature:', err);
+          doc.fontSize(10).font('Helvetica').fillColor('#DC2626').text('Signature image unavailable', { italic: true });
+          doc.fillColor('#000000');
+          doc.y += 20;
+        }
+      } else {
+        doc.fontSize(10).font('Helvetica').fillColor('#DC2626').text('No signature provided', { italic: true });
+        doc.fillColor('#000000');
+        doc.y += 20;
+      }
+      
+      doc.fontSize(10).font('Helvetica');
+      doc.text(`Name: ${employeeData.name || 'N/A'}`, 315, doc.y);
+      doc.y += 12;
+      if (reviewData.employee_signed_at || kpiData.employee_signed_at) {
+        const signedDate = reviewData.employee_signed_at || kpiData.employee_signed_at;
         doc.text(`Date: ${new Date(signedDate).toLocaleDateString()}`, 315, doc.y);
         doc.y += 10;
       }
-
-      // Footer
-      doc.fontSize(10).font('Helvetica').text(
-        `Generated on: ${new Date().toLocaleString()}`,
-        { align: 'center' }
-      );
 
       doc.end();
 

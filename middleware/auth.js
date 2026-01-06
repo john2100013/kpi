@@ -11,6 +11,10 @@ const authenticateToken = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production');
+    console.log('🔍 [auth] JWT decoded:', JSON.stringify(decoded, null, 2));
+    console.log('🔍 [auth] decoded.userId:', decoded.userId);
+    console.log('🔍 [auth] decoded.companyId:', decoded.companyId);
+    console.log('🔍 [auth] decoded.companyId type:', typeof decoded.companyId);
     
     // Get user from database
     const result = await query(
@@ -19,17 +23,22 @@ const authenticateToken = async (req, res, next) => {
     );
 
     if (result.rows.length === 0) {
+      console.error('❌ [auth] User not found in database for userId:', decoded.userId);
       return res.status(401).json({ error: 'User not found' });
     }
 
     req.user = result.rows[0];
+    console.log('🔍 [auth] User from database:', JSON.stringify(req.user, null, 2));
     
     // Super admin doesn't need company association
     if (req.user.role === 'super_admin') {
       req.user.company_id = null; // Super admin has access to all companies
+      console.log('🔍 [auth] Super admin detected, setting company_id to null');
     } else {
       // Use company_id from token (selected company)
       req.user.company_id = decoded.companyId;
+      console.log('🔍 [auth] Regular user, company_id from token:', decoded.companyId);
+      console.log('🔍 [auth] req.user.company_id set to:', req.user.company_id);
       
       // Verify user has access to this company
       if (decoded.companyId) {
@@ -37,14 +46,18 @@ const authenticateToken = async (req, res, next) => {
           'SELECT company_id FROM user_companies WHERE user_id = $1 AND company_id = $2',
           [req.user.id, decoded.companyId]
         );
+        console.log('🔍 [auth] Company check result:', companyCheck.rows.length, 'rows');
 
         if (companyCheck.rows.length === 0) {
+          console.error('❌ [auth] User does not have access to company:', decoded.companyId);
           return res.status(403).json({ error: 'User does not have access to this company' });
         }
       } else {
+        console.error('❌ [auth] Company ID is missing from token');
         return res.status(403).json({ error: 'Company must be selected' });
       }
     }
+    console.log('🔍 [auth] Final req.user.company_id:', req.user.company_id);
     next();
   } catch (error) {
     if (error.name === 'JsonWebTokenError') {

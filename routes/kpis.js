@@ -141,6 +141,73 @@ router.get('/acknowledged-review-pending', authenticateToken, authorizeRoles('ma
   }
 });
 
+// Get KPIs where KPI setting is fully completed (acknowledged and signed)
+// This is a "snapshot" list used by management to prove KPI setting was completed.
+// It intentionally does NOT join on kpi_reviews, so once a KPI appears here
+// it will remain even after reviews are started or completed.
+router.get('/setting-completed', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
+  try {
+    let result;
+
+    if (req.user.role === 'manager') {
+      // Managers see only their team's KPIs
+      result = await query(
+        `SELECT k.*, 
+         e.name as employee_name, e.department as employee_department,
+         e.payroll_number as employee_payroll_number,
+         m.name as manager_name
+         FROM kpis k
+         JOIN users e ON k.employee_id = e.id
+         JOIN users m ON k.manager_id = m.id
+         WHERE k.manager_id = $1 
+           AND k.company_id = $2
+           AND k.status = 'acknowledged'
+           AND k.employee_signature IS NOT NULL
+           AND k.manager_signature IS NOT NULL
+         ORDER BY k.employee_signed_at DESC, k.created_at DESC`,
+        [req.user.id, req.user.company_id]
+      );
+    } else {
+      // HR sees all in their company
+      result = await query(
+        `SELECT k.*, 
+         e.name as employee_name, e.department as employee_department,
+         e.payroll_number as employee_payroll_number,
+         m.name as manager_name
+         FROM kpis k
+         JOIN users e ON k.employee_id = e.id
+         JOIN users m ON k.manager_id = m.id
+         WHERE k.company_id = $1
+           AND k.status = 'acknowledged'
+           AND k.employee_signature IS NOT NULL
+           AND k.manager_signature IS NOT NULL
+         ORDER BY k.employee_signed_at DESC, k.created_at DESC`,
+        [req.user.company_id]
+      );
+    }
+
+    // Fetch items for each KPI
+    const kpisWithItems = await Promise.all(
+      result.rows.map(async (kpi) => {
+        const itemsResult = await query(
+          'SELECT * FROM kpi_items WHERE kpi_id = $1 ORDER BY item_order',
+          [kpi.id]
+        );
+        return {
+          ...kpi,
+          items: itemsResult.rows,
+          item_count: itemsResult.rows.length,
+        };
+      })
+    );
+
+    res.json({ kpis: kpisWithItems });
+  } catch (error) {
+    console.error('Get setting-completed KPIs error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Download PDF for acknowledged KPI
 // NOTE: This route must come before /:id to avoid route conflicts
 router.get('/:kpiId/download-pdf', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {

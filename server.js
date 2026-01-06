@@ -45,6 +45,21 @@ app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Request logging middleware for rating-options
+app.use('/api/rating-options', (req, res, next) => {
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('🔍 [SERVER] ===== RATING OPTIONS ROUTE HIT =====');
+  console.log('🔍 [SERVER] Method:', req.method);
+  console.log('🔍 [SERVER] URL:', req.url);
+  console.log('🔍 [SERVER] Path:', req.path);
+  console.log('🔍 [SERVER] Full URL:', req.originalUrl);
+  console.log('🔍 [SERVER] Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('🔍 [SERVER] Timestamp:', new Date().toISOString());
+  console.log('🔍 [SERVER] This middleware runs BEFORE route handlers');
+  console.log('═══════════════════════════════════════════════════════════');
+  next();
+});
+
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/companies', require('./routes/companies'));
@@ -58,7 +73,21 @@ app.use('/api/departments', require('./routes/departments'));
 app.use('/api/email-templates', require('./routes/emailTemplates'));
 app.use('/api/meetings', require('./routes/meetings'));
 app.use('/api/power-automate', require('./routes/powerAutomate'));
-app.use('/api/rating-options', require('./routes/ratingOptions'));
+// Register rating options routes
+const ratingOptionsRouter = require('./routes/ratingOptions');
+app.use('/api/rating-options', ratingOptionsRouter);
+
+// Debug: Log registered routes after registration
+console.log('🔍 [SERVER] Rating options router registered');
+console.log('🔍 [SERVER] Router stack length:', ratingOptionsRouter.stack?.length || 0);
+if (ratingOptionsRouter.stack) {
+  ratingOptionsRouter.stack.forEach((layer, idx) => {
+    if (layer.route) {
+      const methods = Object.keys(layer.route.methods).map(m => m.toUpperCase()).join(', ');
+      console.log(`🔍 [SERVER] Route ${idx + 1}: ${methods} ${layer.route.path}`);
+    }
+  });
+}
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -75,8 +104,26 @@ app.use((err, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
+  console.log('═══════════════════════════════════════════════════════════');
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🌐 CORS allowed origins:`, allowedOrigins);
+  console.log(`📡 Rating options route: /api/rating-options`);
+  console.log(`📡 Rating options test route: /api/rating-options/test`);
+  console.log(`📡 Rating options POST route: /api/rating-options (POST)`);
+  console.log(`📡 Rating options PUT route: /api/rating-options/:id (PUT)`);
+  console.log(`📡 Rating options DELETE route: /api/rating-options/:id (DELETE)`);
+  
+  // Verify rating options routes are loaded
+  try {
+    const ratingOptionsRouter = require('./routes/ratingOptions');
+    console.log('✅ Rating options router loaded successfully');
+    console.log('✅ Router type:', typeof ratingOptionsRouter);
+  } catch (error) {
+    console.error('❌ Failed to load rating options router:', error);
+  }
+  
+  console.log('═══════════════════════════════════════════════════════════');
   
   // Start schedulers
   startSchedulers();

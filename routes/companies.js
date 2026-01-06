@@ -65,6 +65,136 @@ router.get('/', authenticateToken, authorizeRoles('super_admin'), async (req, re
   }
 });
 
+// Get all HR users with their associated companies (for super admin)
+router.get('/hr-users', authenticateToken, authorizeRoles('super_admin'), async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT 
+         u.id,
+         u.name,
+         u.email,
+         COALESCE(
+           JSON_AGG(
+             DISTINCT JSONB_BUILD_OBJECT(
+               'id', c.id,
+               'name', c.name,
+               'domain', c.domain,
+               'is_primary', uc.is_primary
+             )
+           ) FILTER (WHERE c.id IS NOT NULL),
+           '[]'
+         ) AS companies
+       FROM users u
+       LEFT JOIN user_companies uc ON u.id = uc.user_id
+       LEFT JOIN companies c ON uc.company_id = c.id
+       WHERE u.role = 'hr'
+       GROUP BY u.id, u.name, u.email
+       ORDER BY u.name`
+    );
+
+    res.json({ hrUsers: result.rows });
+  } catch (error) {
+    console.error('Get HR users error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get companies that a specific HR user is NOT yet associated with
+router.get('/available-companies-for-hr/:userId', authenticateToken, authorizeRoles('super_admin'), async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Verify the user is an HR user
+    const userResult = await query(
+      'SELECT id, role FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'HR user not found' });
+    }
+
+    if (userResult.rows[0].role !== 'hr') {
+      return res.status(400).json({ error: 'Selected user is not an HR user' });
+    }
+
+    // Return companies that are not already associated with this HR user
+    const companiesResult = await query(
+      `SELECT c.id, c.name, c.domain, c.created_at
+       FROM companies c
+       WHERE NOT EXISTS (
+         SELECT 1 
+         FROM user_companies uc 
+         WHERE uc.company_id = c.id 
+           AND uc.user_id = $1
+       )
+       ORDER BY c.name`,
+      [userId]
+    );
+
+    res.json({ companies: companiesResult.rows });
+  } catch (error) {
+    console.error('Get available companies for HR error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Assign an existing HR user to an additional company
+router.post('/assign-hr-to-company', authenticateToken, authorizeRoles('super_admin'), async (req, res) => {
+  try {
+    const { userId, companyId } = req.body;
+
+    if (!userId || !companyId) {
+      return res.status(400).json({ error: 'User ID and Company ID are required' });
+    }
+
+    // Verify HR user exists and has correct role
+    const userResult = await query(
+      'SELECT id, role FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'HR user not found' });
+    }
+
+    if (userResult.rows[0].role !== 'hr') {
+      return res.status(400).json({ error: 'Selected user is not an HR user' });
+    }
+
+    // Verify company exists
+    const companyResult = await query(
+      'SELECT id FROM companies WHERE id = $1',
+      [companyId]
+    );
+
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    // Add association as non-primary company; avoid duplicates
+    const insertResult = await query(
+      `INSERT INTO user_companies (user_id, company_id, is_primary)
+       VALUES ($1, $2, false)
+       ON CONFLICT (user_id, company_id) DO NOTHING
+       RETURNING user_id, company_id, is_primary`,
+      [userId, companyId]
+    );
+
+    if (insertResult.rows.length === 0) {
+      return res.status(400).json({ error: 'HR user is already associated with this company' });
+    }
+
+    res.status(201).json({
+      message: 'HR user successfully assigned to company',
+      assignment: insertResult.rows[0],
+    });
+  } catch (error) {
+    console.error('Assign HR to company error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Create a new company with onboarding data (super admin only)
 router.post('/onboard', authenticateToken, authorizeRoles('super_admin'), async (req, res) => {
   try {
@@ -472,6 +602,182 @@ router.get('/:companyId/departments', authenticateToken, async (req, res) => {
     res.json({ departments: result.rows });
   } catch (error) {
     console.error('Get departments error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update company information (Super Admin only)
+router.put('/:companyId', authenticateToken, authorizeRoles('super_admin'), async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    const { name, domain } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Company name is required' });
+    }
+
+    // Check if company exists
+    const companyCheck = await query('SELECT id FROM companies WHERE id = $1', [companyId]);
+    if (companyCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    // Check if domain is already taken by another company
+    if (domain && domain.trim()) {
+      const domainCheck = await query(
+        'SELECT id FROM companies WHERE domain = $1 AND id != $2',
+        [domain.trim(), companyId]
+      );
+      if (domainCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'Domain is already taken' });
+      }
+    }
+
+    // Update company
+    await query(
+      'UPDATE companies SET name = $1, domain = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+      [name.trim(), domain ? domain.trim() : null, companyId]
+    );
+
+    // Fetch updated company
+    const result = await query(
+      `SELECT 
+        c.id, 
+        c.name, 
+        c.domain, 
+        c.created_at,
+        (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.role = 'employee') as total_employees,
+        (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.role = 'manager') as total_managers,
+        (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.role = 'hr') as total_hr,
+        (SELECT COUNT(*) FROM departments d WHERE d.company_id = c.id) as total_departments
+       FROM companies c
+       WHERE c.id = $1`,
+      [companyId]
+    );
+
+    res.json({ 
+      message: 'Company updated successfully',
+      company: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Update company error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create user (Super Admin only - for employees, managers, HR)
+router.post('/users', authenticateToken, authorizeRoles('super_admin'), async (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      password,
+      role,
+      company_id,
+      payroll_number,
+      national_id,
+      department,
+      position,
+      employment_date,
+      manager_id
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !email || !password || !role || !company_id) {
+      return res.status(400).json({ error: 'Name, email, password, role, and company_id are required' });
+    }
+
+    // Validate role
+    if (!['employee', 'manager', 'hr'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be employee, manager, or hr' });
+    }
+
+    // Check if email already exists
+    const emailCheck = await query('SELECT id FROM users WHERE email = $1', [email.trim()]);
+    if (emailCheck.rows.length > 0) {
+      return res.status(400).json({ error: 'Email is already taken' });
+    }
+
+    // Check if payroll_number is provided and unique
+    if (payroll_number) {
+      const payrollCheck = await query('SELECT id FROM users WHERE payroll_number = $1', [payroll_number.trim()]);
+      if (payrollCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'Payroll number is already taken' });
+      }
+    }
+
+    // Check if national_id is provided and unique
+    if (national_id) {
+      const nationalIdCheck = await query('SELECT id FROM users WHERE national_id = $1', [national_id.trim()]);
+      if (nationalIdCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'National ID is already taken' });
+      }
+    }
+
+    // Check if company exists
+    const companyCheck = await query('SELECT id FROM companies WHERE id = $1', [company_id]);
+    if (companyCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    // Hash password
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Generate payroll number if not provided
+    const finalPayrollNumber = payroll_number || `${role.toUpperCase()}-${company_id}-${Date.now()}`;
+
+    // Insert user
+    const userResult = await query(
+      `INSERT INTO users (
+        name, email, password_hash, role, company_id, payroll_number, 
+        national_id, department, position, employment_date, manager_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [
+        name.trim(),
+        email.trim(),
+        passwordHash,
+        role,
+        company_id,
+        finalPayrollNumber,
+        national_id ? national_id.trim() : null,
+        department ? department.trim() : null,
+        position ? position.trim() : null,
+        employment_date || null,
+        manager_id || null
+      ]
+    );
+
+    const newUser = userResult.rows[0];
+
+    // Add to user_companies table
+    await query(
+      'INSERT INTO user_companies (user_id, company_id, is_primary) VALUES ($1, $2, $3)',
+      [newUser.id, company_id, true]
+    );
+
+    // If manager, assign to departments if provided
+    if (role === 'manager' && department) {
+      const deptResult = await query(
+        'SELECT id FROM departments WHERE name = $1 AND company_id = $2',
+        [department.trim(), company_id]
+      );
+      if (deptResult.rows.length > 0) {
+        await query(
+          'INSERT INTO manager_departments (manager_id, department_id, company_id) VALUES ($1, $2, $3) ON CONFLICT (manager_id, department_id) DO NOTHING',
+          [newUser.id, deptResult.rows[0].id, company_id]
+        );
+      }
+    }
+
+    // Remove password_hash from response
+    const { password_hash, ...userResponse } = newUser;
+
+    res.status(201).json({
+      message: 'User created successfully',
+      user: userResponse
+    });
+  } catch (error) {
+    console.error('Create user error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -178,19 +178,104 @@ router.get('/me', authenticateToken, async (req, res) => {
   }
 });
 
-// Update user profile (including signature)
+// Update user profile (including signature and other fields for HR/Manager)
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
-    const { signature } = req.body;
+    const { 
+      signature, 
+      name, 
+      email, 
+      department, 
+      position, 
+      national_id,
+      payroll_number 
+    } = req.body;
     const userId = req.user.id;
 
-    // Update user signature
-    if (signature !== undefined) {
-      await query(
-        'UPDATE users SET signature = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        [signature, userId]
-      );
+    // Check if user can edit profile (HR, Manager, Super Admin only)
+    if (!['hr', 'manager', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'You do not have permission to edit your profile' });
     }
+
+    // Build update query dynamically
+    const updates = [];
+    const values = [];
+    let paramIndex = 1;
+
+    if (signature !== undefined) {
+      updates.push(`signature = $${paramIndex++}`);
+      values.push(signature);
+    }
+
+    if (name !== undefined && name.trim()) {
+      updates.push(`name = $${paramIndex++}`);
+      values.push(name.trim());
+    }
+
+    if (email !== undefined && email.trim()) {
+      // Check if email is already taken by another user
+      const emailCheck = await query(
+        'SELECT id FROM users WHERE email = $1 AND id != $2',
+        [email.trim(), userId]
+      );
+      if (emailCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'Email is already taken' });
+      }
+      updates.push(`email = $${paramIndex++}`);
+      values.push(email.trim());
+    }
+
+    if (department !== undefined) {
+      updates.push(`department = $${paramIndex++}`);
+      values.push(department || null);
+    }
+
+    if (position !== undefined) {
+      updates.push(`position = $${paramIndex++}`);
+      values.push(position || null);
+    }
+
+    if (national_id !== undefined) {
+      // Check if national_id is already taken by another user
+      if (national_id && national_id.trim()) {
+        const nationalIdCheck = await query(
+          'SELECT id FROM users WHERE national_id = $1 AND id != $2',
+          [national_id.trim(), userId]
+        );
+        if (nationalIdCheck.rows.length > 0) {
+          return res.status(400).json({ error: 'National ID is already taken' });
+        }
+      }
+      updates.push(`national_id = $${paramIndex++}`);
+      values.push(national_id || null);
+    }
+
+    if (payroll_number !== undefined && payroll_number.trim()) {
+      // Check if payroll_number is already taken by another user
+      const payrollCheck = await query(
+        'SELECT id FROM users WHERE payroll_number = $1 AND id != $2',
+        [payroll_number.trim(), userId]
+      );
+      if (payrollCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'Payroll number is already taken' });
+      }
+      updates.push(`payroll_number = $${paramIndex++}`);
+      values.push(payroll_number.trim());
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    // Add updated_at
+    updates.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(userId);
+
+    // Execute update
+    await query(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex}`,
+      values
+    );
 
     // Fetch updated user
     const result = await query(
