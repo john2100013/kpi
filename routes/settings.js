@@ -6,7 +6,7 @@ const router = express.Router();
 // ========== KPI Period Settings ==========
 
 // Get all period settings for company
-router.get('/period-settings', authenticateToken, authorizeRoles('hr'), async (req, res) => {
+router.get('/period-settings', authenticateToken, authorizeRoles('hr', 'manager'), async (req, res) => {
   try {
     // Use to_char to format dates as strings directly in SQL to avoid timezone conversion
     const result = await query(

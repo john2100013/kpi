@@ -4,125 +4,113 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 const router = express.Router();
 
 // Get department statistics with KPI status breakdown (HR and Manager)
+// Optimized for large datasets (millions of records)
 router.get('/statistics', authenticateToken, authorizeRoles('hr', 'manager'), async (req, res) => {
   try {
-    // Get departments based on user role
-    let departmentsResult;
-    if (req.user.role === 'hr') {
-      // HR sees all departments in the company
-      departmentsResult = await query(
-        `SELECT DISTINCT department FROM users 
-         WHERE company_id = $1 AND department IS NOT NULL AND department != ''
-         ORDER BY department`,
-        [req.user.company_id]
-      );
-    } else if (req.user.role === 'manager') {
-      // Manager sees only departments they manage (departments of their direct reports)
-      departmentsResult = await query(
-        `SELECT DISTINCT u.department FROM users u
-         WHERE u.company_id = $1 
-         AND u.department IS NOT NULL 
-         AND u.department != ''
-         AND u.manager_id = $2
-         ORDER BY u.department`,
-        [req.user.company_id, req.user.id]
-      );
-    } else {
-      return res.status(403).json({ error: 'Access denied' });
+    const { department, period, manager } = req.query;
+
+    // Build dynamic filter conditions
+    const filters = [];
+    const kpiFilters = [];
+    let paramIndex = 2; // Start at 2 because $1 is company_id
+    const params = [req.user.company_id];
+
+    // Add manager filter (for HR viewing specific manager's departments)
+    if (req.user.role === 'manager') {
+      filters.push(`u.manager_id = $${paramIndex}`);
+      params.push(req.user.id);
+      paramIndex++;
+    } else if (manager && manager !== '') {
+      filters.push(`u.manager_id = $${paramIndex}`);
+      params.push(parseInt(manager));
+      paramIndex++;
     }
 
-    const departments = departmentsResult.rows.map(row => row.department);
-    const statistics = [];
+    // Add department filter
+    if (department && department !== '') {
+      filters.push(`u.department = $${paramIndex}`);
+      params.push(department);
+      paramIndex++;
+    }
 
-    for (const department of departments) {
-      // Get all employees in this department
-      const employeesResult = await query(
-        `SELECT id FROM users 
-         WHERE company_id = $1 AND department = $2 AND role = 'employee'`,
-        [req.user.company_id, department]
-      );
+    // Add period filter to KPI query
+    if (period && period !== '') {
+      const [periodType, quarter, year] = period.split('|');
+      if (periodType === 'quarterly' && quarter) {
+        kpiFilters.push(`k.period_type = 'quarterly' AND k.quarter = '${quarter}' AND k.year = ${year}`);
+      } else if (periodType === 'annual') {
+        kpiFilters.push(`k.period_type = 'annual' AND k.year = ${year}`);
+      }
+    }
 
-      const employeeIds = employeesResult.rows.map(e => e.id);
-      if (employeeIds.length === 0) continue;
+    const filterCondition = filters.length > 0 ? 'AND ' + filters.join(' AND ') : '';
+    const kpiFilterCondition = kpiFilters.length > 0 ? 'AND ' + kpiFilters.join(' AND ') : '';
 
-      // Count employees by KPI status
-      const stats = {
+    // Single aggregated query to get all statistics with filters
+    const statsQuery = `
+      WITH latest_kpis AS (
+        SELECT DISTINCT ON (k.employee_id) 
+          k.employee_id,
+          k.id as kpi_id,
+          k.status as kpi_status,
+          k.created_at,
+          kr.id as review_id,
+          kr.review_status
+        FROM kpis k
+        LEFT JOIN kpi_reviews kr ON k.id = kr.kpi_id
+        WHERE k.company_id = $1
+        ${kpiFilterCondition}
+        ORDER BY k.employee_id, k.created_at DESC
+      ),
+      employee_status AS (
+        SELECT 
+          u.id as employee_id,
+          u.department,
+          CASE
+            WHEN lk.kpi_id IS NULL THEN 'no_kpi'
+            WHEN lk.kpi_status = 'pending' THEN 'pending'
+            WHEN lk.kpi_status = 'acknowledged' AND lk.review_id IS NULL THEN 'acknowledged_review_pending'
+            WHEN lk.review_status = 'employee_submitted' THEN 'self_rating_submitted'
+            WHEN lk.review_status IN ('manager_submitted', 'completed') THEN 'review_completed'
+            WHEN lk.review_status = 'pending' THEN 'review_pending'
+            ELSE 'unknown'
+          END as category
+        FROM users u
+        LEFT JOIN latest_kpis lk ON u.id = lk.employee_id
+        WHERE u.company_id = $1 
+          AND u.role = 'employee'
+          AND u.department IS NOT NULL 
+          AND u.department != ''
+          ${filterCondition}
+      )
+      SELECT 
         department,
-        total_employees: employeeIds.length,
-        categories: {
-          pending: 0, // KPI Setting - Awaiting Acknowledgement
-          acknowledged_review_pending: 0, // KPI Acknowledged - Review Pending
-          self_rating_submitted: 0, // Self-Rating Submitted - Awaiting Manager Review
-          review_completed: 0, // KPI Review Completed
-          review_pending: 0, // KPI Review - Self-Rating Required
-          no_kpi: 0, // No KPI assigned
-        },
-        employees_by_category: {
-          pending: [],
-          acknowledged_review_pending: [],
-          self_rating_submitted: [],
-          review_completed: [],
-          review_pending: [],
-          no_kpi: [],
-        }
-      };
+        COUNT(*) as total_employees,
+        COUNT(*) FILTER (WHERE category = 'pending') as pending,
+        COUNT(*) FILTER (WHERE category = 'acknowledged_review_pending') as acknowledged_review_pending,
+        COUNT(*) FILTER (WHERE category = 'self_rating_submitted') as self_rating_submitted,
+        COUNT(*) FILTER (WHERE category = 'review_completed') as review_completed,
+        COUNT(*) FILTER (WHERE category = 'review_pending') as review_pending,
+        COUNT(*) FILTER (WHERE category = 'no_kpi') as no_kpi
+      FROM employee_status
+      GROUP BY department
+      ORDER BY department
+    `;
 
-      // Get all KPIs for employees in this department
-      const kpisResult = await query(
-        `SELECT k.*, kr.id as review_id, kr.review_status 
-         FROM kpis k
-         LEFT JOIN kpi_reviews kr ON k.id = kr.kpi_id
-         WHERE k.employee_id = ANY($1::int[]) AND k.company_id = $2
-         ORDER BY k.created_at DESC`,
-        [employeeIds, req.user.company_id]
-      );
+    const statsResult = await query(statsQuery, params);
 
-      // Track which employees have KPIs
-      const employeesWithKPI = new Set();
-      
-      // Group KPIs by employee (get latest KPI per employee)
-      const latestKPIsByEmployee = {};
-      for (const kpi of kpisResult.rows) {
-        if (!latestKPIsByEmployee[kpi.employee_id] || 
-            new Date(kpi.created_at) > new Date(latestKPIsByEmployee[kpi.employee_id].created_at)) {
-          latestKPIsByEmployee[kpi.employee_id] = kpi;
-        }
-        employeesWithKPI.add(kpi.employee_id);
+    const statistics = statsResult.rows.map(row => ({
+      department: row.department,
+      total_employees: parseInt(row.total_employees),
+      categories: {
+        pending: parseInt(row.pending),
+        acknowledged_review_pending: parseInt(row.acknowledged_review_pending),
+        self_rating_submitted: parseInt(row.self_rating_submitted),
+        review_completed: parseInt(row.review_completed),
+        review_pending: parseInt(row.review_pending),
+        no_kpi: parseInt(row.no_kpi),
       }
-
-      // Categorize employees
-      for (const employeeId of employeeIds) {
-        if (!latestKPIsByEmployee[employeeId]) {
-          // No KPI assigned
-          stats.categories.no_kpi++;
-          stats.employees_by_category.no_kpi.push(employeeId);
-          continue;
-        }
-
-        const kpi = latestKPIsByEmployee[employeeId];
-
-        if (kpi.status === 'pending') {
-          stats.categories.pending++;
-          stats.employees_by_category.pending.push(employeeId);
-        } else if (kpi.status === 'acknowledged' && !kpi.review_id) {
-          stats.categories.acknowledged_review_pending++;
-          stats.employees_by_category.acknowledged_review_pending.push(employeeId);
-        } else if (kpi.review_id) {
-          if (kpi.review_status === 'employee_submitted') {
-            stats.categories.self_rating_submitted++;
-            stats.employees_by_category.self_rating_submitted.push(employeeId);
-          } else if (kpi.review_status === 'manager_submitted' || kpi.review_status === 'completed') {
-            stats.categories.review_completed++;
-            stats.employees_by_category.review_completed.push(employeeId);
-          } else if (kpi.review_status === 'pending') {
-            stats.categories.review_pending++;
-            stats.employees_by_category.review_pending.push(employeeId);
-          }
-        }
-      }
-
-      statistics.push(stats);
-    }
+    }));
 
     res.json({ statistics });
   } catch (error) {
@@ -132,6 +120,7 @@ router.get('/statistics', authenticateToken, authorizeRoles('hr', 'manager'), as
 });
 
 // Get employees in a specific department and category (HR and Manager)
+// Optimized for large datasets with single query approach
 router.get('/statistics/:department/:category', authenticateToken, authorizeRoles('hr', 'manager'), async (req, res) => {
   try {
     const { department, category } = req.params;
@@ -149,133 +138,89 @@ router.get('/statistics/:department/:category', authenticateToken, authorizeRole
       return res.status(400).json({ error: 'Invalid category' });
     }
 
-    // Get employees in this department based on user role
-    let employeesResult;
-    if (req.user.role === 'hr') {
-      // HR sees all employees in the department
-      employeesResult = await query(
-        `SELECT id FROM users 
-         WHERE company_id = $1 AND department = $2 AND role = 'employee'`,
-        [req.user.company_id, department]
-      );
-    } else if (req.user.role === 'manager') {
-      // Manager sees only their direct reports in this department
-      employeesResult = await query(
-        `SELECT id FROM users 
-         WHERE company_id = $1 AND department = $2 AND role = 'employee' AND manager_id = $3`,
-        [req.user.company_id, department, req.user.id]
-      );
-      
-      // Verify manager has access to this department
-      if (employeesResult.rows.length === 0) {
-        // Check if manager manages any employees in this department
-        const verifyResult = await query(
-          `SELECT COUNT(*) as count FROM users 
-           WHERE company_id = $1 AND department = $2 AND manager_id = $3`,
-          [req.user.company_id, department, req.user.id]
-        );
-        if (parseInt(verifyResult.rows[0].count) === 0) {
-          return res.status(403).json({ error: 'Access denied: You do not manage employees in this department' });
-        }
-      }
-    } else {
-      return res.status(403).json({ error: 'Access denied' });
-    }
+    // Build optimized query with proper indexing
+    const managerCondition = req.user.role === 'manager' ? 'AND u.manager_id = $3' : '';
+    const params = req.user.role === 'manager' 
+      ? [req.user.company_id, department, req.user.id]
+      : [req.user.company_id, department];
 
-    const employeeIds = employeesResult.rows.map(e => e.id);
-    if (employeeIds.length === 0) {
-      return res.json({ employees: [] });
-    }
+    // Single optimized query to get employees in category with all details
+    const employeesQuery = `
+      WITH latest_kpis AS (
+        SELECT DISTINCT ON (k.employee_id) 
+          k.employee_id,
+          k.id as kpi_id,
+          k.status as kpi_status,
+          k.created_at,
+          kr.id as review_id,
+          kr.review_status
+        FROM kpis k
+        LEFT JOIN kpi_reviews kr ON k.id = kr.kpi_id
+        WHERE k.company_id = $1
+        ORDER BY k.employee_id, k.created_at DESC
+      ),
+      employee_with_category AS (
+        SELECT 
+          u.id,
+          u.name,
+          u.email,
+          u.payroll_number,
+          u.department,
+          u.position,
+          u.employment_date,
+          u.manager_id,
+          m.name as manager_name,
+          CASE
+            WHEN lk.kpi_id IS NULL THEN 'no_kpi'
+            WHEN lk.kpi_status = 'pending' THEN 'pending'
+            WHEN lk.kpi_status = 'acknowledged' AND lk.review_id IS NULL THEN 'acknowledged_review_pending'
+            WHEN lk.review_status = 'employee_submitted' THEN 'self_rating_submitted'
+            WHEN lk.review_status IN ('manager_submitted', 'completed') THEN 'review_completed'
+            WHEN lk.review_status = 'pending' THEN 'review_pending'
+            ELSE 'unknown'
+          END as category
+        FROM users u
+        LEFT JOIN latest_kpis lk ON u.id = lk.employee_id
+        LEFT JOIN users m ON u.manager_id = m.id
+        WHERE u.company_id = $1 
+          AND u.department = $2
+          AND u.role = 'employee'
+          ${managerCondition}
+      )
+      SELECT 
+        id, name, email, payroll_number, department, position, 
+        employment_date, manager_id, manager_name
+      FROM employee_with_category
+      WHERE category = $${params.length + 1}
+      ORDER BY name
+    `;
 
-    let employeeIdsInCategory = [];
+    const result = await query(employeesQuery, [...params, category]);
 
-    if (category === 'no_kpi') {
-      // Employees with no KPIs
-      const kpisResult = await query(
-        `SELECT DISTINCT employee_id FROM kpis 
-         WHERE employee_id = ANY($1::int[]) AND company_id = $2`,
-        [employeeIds, req.user.company_id]
-      );
-      const employeesWithKPI = new Set(kpisResult.rows.map(r => r.employee_id));
-      employeeIdsInCategory = employeeIds.filter(id => !employeesWithKPI.has(id));
-    } else {
-      // Get all KPIs for employees in this department
-      const kpisResult = await query(
-        `SELECT k.*, kr.id as review_id, kr.review_status 
-         FROM kpis k
-         LEFT JOIN kpi_reviews kr ON k.id = kr.kpi_id
-         WHERE k.employee_id = ANY($1::int[]) AND k.company_id = $2
-         ORDER BY k.created_at DESC`,
-        [employeeIds, req.user.company_id]
-      );
-
-      // Group KPIs by employee (get latest KPI per employee)
-      const latestKPIsByEmployee = {};
-      for (const kpi of kpisResult.rows) {
-        if (!latestKPIsByEmployee[kpi.employee_id] || 
-            new Date(kpi.created_at) > new Date(latestKPIsByEmployee[kpi.employee_id].created_at)) {
-          latestKPIsByEmployee[kpi.employee_id] = kpi;
-        }
-      }
-
-      // Filter by category
-      for (const employeeId of employeeIds) {
-        const kpi = latestKPIsByEmployee[employeeId];
-        if (!kpi && category !== 'no_kpi') continue;
-
-        let matches = false;
-        if (category === 'pending' && kpi && kpi.status === 'pending') {
-          matches = true;
-        } else if (category === 'acknowledged_review_pending' && kpi && kpi.status === 'acknowledged' && !kpi.review_id) {
-          matches = true;
-        } else if (category === 'self_rating_submitted' && kpi && kpi.review_id && kpi.review_status === 'employee_submitted') {
-          matches = true;
-        } else if (category === 'review_completed' && kpi && kpi.review_id && 
-                   (kpi.review_status === 'manager_submitted' || kpi.review_status === 'completed')) {
-          matches = true;
-        } else if (category === 'review_pending' && kpi && kpi.review_id && kpi.review_status === 'pending') {
-          matches = true;
-        }
-
-        if (matches) {
-          employeeIdsInCategory.push(employeeId);
-        }
-      }
-    }
-
-    // Get employee details
-    if (employeeIdsInCategory.length === 0) {
-      return res.json({ employees: [] });
-    }
-
-    const employeeDetailsResult = await query(
-      `SELECT id, name, email, payroll_number, department, position, employment_date, manager_id
-       FROM users 
-       WHERE id = ANY($1::int[]) AND company_id = $2
-       ORDER BY name`,
-      [employeeIdsInCategory, req.user.company_id]
-    );
-
-    // Also get manager names
-    const employees = await Promise.all(
-      employeeDetailsResult.rows.map(async (employee) => {
-        if (employee.manager_id) {
-          const managerResult = await query(
-            'SELECT name FROM users WHERE id = $1',
-            [employee.manager_id]
-          );
-          return {
-            ...employee,
-            manager_name: managerResult.rows[0]?.name || null
-          };
-        }
-        return { ...employee, manager_name: null };
-      })
-    );
-
-    res.json({ employees });
+    res.json({ employees: result.rows });
   } catch (error) {
     console.error('Get employees by category error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get list of managers in the company (HR only)
+router.get('/managers', authenticateToken, authorizeRoles('hr'), async (req, res) => {
+  try {
+    const managersResult = await query(
+      `SELECT DISTINCT u.id, u.name 
+       FROM users u
+       INNER JOIN users e ON e.manager_id = u.id
+       WHERE u.company_id = $1 
+       AND u.role = 'manager'
+       AND e.role = 'employee'
+       ORDER BY u.name`,
+      [req.user.company_id]
+    );
+
+    res.json({ managers: managersResult.rows });
+  } catch (error) {
+    console.error('Get managers error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

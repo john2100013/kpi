@@ -45,6 +45,27 @@ router.get('/managers', authenticateToken, authorizeRoles('hr', 'super_admin', '
   }
 });
 
+// Get total employee count for company (optimized for large datasets)
+router.get('/count', authenticateToken, authorizeRoles('hr', 'super_admin'), async (req, res) => {
+  try {
+    const companyId = req.query.companyId || (req.user.role === 'super_admin' ? null : req.user.company_id);
+
+    if (req.user.role === 'super_admin' && !companyId) {
+      return res.status(400).json({ error: 'Company ID is required for super admin' });
+    }
+
+    const result = await query(
+      `SELECT COUNT(*) as count FROM users WHERE role = 'employee' AND company_id = $1`,
+      [companyId]
+    );
+
+    res.json({ count: parseInt(result.rows[0].count) });
+  } catch (error) {
+    console.error('Get employee count error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get all employees with pagination (for managers, HR, and super admin)
 router.get('/', authenticateToken, authorizeRoles('manager', 'hr', 'super_admin'), async (req, res) => {
   try {
@@ -153,25 +174,35 @@ router.get('/', authenticateToken, authorizeRoles('manager', 'hr', 'super_admin'
 // Create new employee
 router.post('/', authenticateToken, authorizeRoles('hr', 'super_admin'), async (req, res) => {
   try {
-    const { name, payrollNumber, nationalId, department, departmentId, position, employmentDate, managerId } = req.body;
+    const { name, email, payrollNumber, nationalId, department, departmentId, position, employmentDate, managerId } = req.body;
     const companyId = req.query.companyId || (req.user.role === 'super_admin' ? null : req.user.company_id);
 
-    if (!name || !payrollNumber || !nationalId) {
-      return res.status(400).json({ error: 'Name, payroll number, and national ID are required' });
+    if (!name || !payrollNumber || !email) {
+      return res.status(400).json({ error: 'Name, payroll number, and email are required' });
     }
 
     if (req.user.role === 'super_admin' && !companyId) {
       return res.status(400).json({ error: 'Company ID is required for super admin' });
     }
 
-    // Check if employee already exists
-    const existing = await query(
+    // Check if employee with payroll number already exists
+    const existingPayroll = await query(
       'SELECT id FROM users WHERE payroll_number = $1 AND company_id = $2',
       [payrollNumber, companyId]
     );
 
-    if (existing.rows.length > 0) {
+    if (existingPayroll.rows.length > 0) {
       return res.status(400).json({ error: 'Employee with this payroll number already exists' });
+    }
+
+    // Check if email already exists
+    const existingEmail = await query(
+      'SELECT id FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (existingEmail.rows.length > 0) {
+      return res.status(400).json({ error: 'Email already exists' });
     }
 
     // Verify manager belongs to same company if provided
@@ -185,11 +216,16 @@ router.post('/', authenticateToken, authorizeRoles('hr', 'super_admin'), async (
       }
     }
 
+    // Hash default password "Africa.1"
+    const bcrypt = require('bcryptjs');
+    const defaultPassword = 'Africa.1';
+    const passwordHash = await bcrypt.hash(defaultPassword, 10);
+
     const result = await query(
-      `INSERT INTO users (name, payroll_number, national_id, role, department, department_id, position, employment_date, manager_id, company_id)
-       VALUES ($1, $2, $3, 'employee', $4, $5, $6, $7, $8, $9)
-       RETURNING id, name, payroll_number, national_id, department, position, employment_date, manager_id, created_at`,
-      [name, payrollNumber, nationalId, department || null, departmentId || null, position || null, employmentDate || null, managerId || null, companyId]
+      `INSERT INTO users (name, email, password_hash, password_change_required, payroll_number, national_id, role, department, department_id, position, employment_date, manager_id, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 'employee', $7, $8, $9, $10, $11, $12)
+       RETURNING id, name, email, payroll_number, national_id, department, position, employment_date, manager_id, created_at`,
+      [name, email, passwordHash, true, payrollNumber, nationalId || null, department || null, departmentId || null, position || null, employmentDate || null, managerId || null, companyId]
     );
 
     const employeeId = result.rows[0].id;
@@ -200,7 +236,10 @@ router.post('/', authenticateToken, authorizeRoles('hr', 'super_admin'), async (
       [employeeId, companyId, true]
     );
 
-    res.status(201).json({ employee: result.rows[0] });
+    res.status(201).json({ 
+      employee: result.rows[0],
+      message: 'Employee created successfully with default password: Africa.1'
+    });
   } catch (error) {
     console.error('Create employee error:', error);
     res.status(500).json({ error: 'Internal server error' });

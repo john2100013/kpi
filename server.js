@@ -64,6 +64,7 @@ app.use('/api/rating-options', (req, res, next) => {
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/companies', require('./routes/companies'));
 app.use('/api/employees', require('./routes/employees'));
+app.use('/api/users', require('./routes/users'));
 app.use('/api/kpis', require('./routes/kpis'));
 app.use('/api/kpi-acknowledgement', require('./routes/kpiAcknowledgement'));
 app.use('/api/kpi-review', require('./routes/kpiReview'));

@@ -42,15 +42,31 @@ const authenticateToken = async (req, res, next) => {
       
       // Verify user has access to this company
       if (decoded.companyId) {
-        const companyCheck = await query(
-          'SELECT company_id FROM user_companies WHERE user_id = $1 AND company_id = $2',
-          [req.user.id, decoded.companyId]
+        // First check if user's primary company_id matches
+        const userResult = await query(
+          'SELECT company_id FROM users WHERE id = $1',
+          [req.user.id]
         );
-        console.log('🔍 [auth] Company check result:', companyCheck.rows.length, 'rows');
+        
+        const userCompanyId = userResult.rows[0]?.company_id;
+        console.log('🔍 [auth] User primary company_id:', userCompanyId);
+        
+        // Check if decoded company matches user's primary company OR user_companies table (for HR with multiple companies)
+        if (userCompanyId && userCompanyId === decoded.companyId) {
+          console.log('✅ [auth] User has access via primary company_id');
+        } else {
+          // Check user_companies table (for HR users with multi-company access)
+          const companyCheck = await query(
+            'SELECT company_id FROM user_companies WHERE user_id = $1 AND company_id = $2',
+            [req.user.id, decoded.companyId]
+          );
+          console.log('🔍 [auth] Company check result:', companyCheck.rows.length, 'rows');
 
-        if (companyCheck.rows.length === 0) {
-          console.error('❌ [auth] User does not have access to company:', decoded.companyId);
-          return res.status(403).json({ error: 'User does not have access to this company' });
+          if (companyCheck.rows.length === 0) {
+            console.error('❌ [auth] User does not have access to company:', decoded.companyId);
+            return res.status(403).json({ error: 'User does not have access to this company' });
+          }
+          console.log('✅ [auth] User has access via user_companies table');
         }
       } else {
         console.error('❌ [auth] Company ID is missing from token');

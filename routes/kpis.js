@@ -76,6 +76,114 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
+// Get paginated KPIs with filters (for HR) - optimized for large datasets
+router.get('/paginated', authenticateToken, authorizeRoles('hr'), async (req, res) => {
+  try {
+    const { page = 1, limit = 25, department, status, period, manager, search } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    // Build dynamic WHERE clauses
+    const conditions = ['k.company_id = $1'];
+    const params = [req.user.company_id];
+    let paramIndex = 2;
+
+    // Department filter
+    if (department) {
+      conditions.push(`e.department = $${paramIndex}`);
+      params.push(department);
+      paramIndex++;
+    }
+
+    // Manager filter
+    if (manager) {
+      conditions.push(`k.manager_id = $${paramIndex}`);
+      params.push(parseInt(manager));
+      paramIndex++;
+    }
+
+    // Period filter
+    if (period) {
+      const [periodType, quarter, year] = period.split('|');
+      if (periodType === 'quarterly' && quarter) {
+        conditions.push(`k.period = 'quarterly' AND k.quarter = $${paramIndex} AND k.year = $${paramIndex + 1}`);
+        params.push(quarter, parseInt(year));
+        paramIndex += 2;
+      } else if (periodType === 'annual') {
+        conditions.push(`k.period = 'annual' AND k.year = $${paramIndex}`);
+        params.push(parseInt(year));
+        paramIndex++;
+      }
+    }
+
+    // Status filter
+    if (status) {
+      if (status === 'pending') {
+        conditions.push(`k.status = 'pending'`);
+      } else if (status === 'acknowledged') {
+        conditions.push(`k.status = 'acknowledged' AND NOT EXISTS (SELECT 1 FROM kpi_reviews kr WHERE kr.kpi_id = k.id)`);
+      } else if (status === 'employee_submitted') {
+        conditions.push(`EXISTS (SELECT 1 FROM kpi_reviews kr WHERE kr.kpi_id = k.id AND kr.review_status = 'employee_submitted')`);
+      } else if (status === 'completed') {
+        conditions.push(`EXISTS (SELECT 1 FROM kpi_reviews kr WHERE kr.kpi_id = k.id AND kr.review_status IN ('manager_submitted', 'completed'))`);
+      }
+    }
+
+    // Search filter
+    if (search) {
+      conditions.push(`(
+        e.name ILIKE $${paramIndex} OR 
+        e.department ILIKE $${paramIndex} OR 
+        e.payroll_number ILIKE $${paramIndex} OR
+        m.name ILIKE $${paramIndex} OR
+        k.title ILIKE $${paramIndex}
+      )`);
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    const whereClause = conditions.join(' AND ');
+
+    // Get total count
+    const countResult = await query(
+      `SELECT COUNT(DISTINCT k.id) as total
+       FROM kpis k
+       JOIN users e ON k.employee_id = e.id
+       JOIN users m ON k.manager_id = m.id
+       WHERE ${whereClause}`,
+      params
+    );
+
+    const total = parseInt(countResult.rows[0].total);
+
+    // Get paginated results - optimized with indexes
+    const result = await query(
+      `SELECT k.*, 
+       e.name as employee_name, 
+       e.department as employee_department,
+       e.payroll_number as employee_payroll_number,
+       m.name as manager_name
+       FROM kpis k
+       JOIN users e ON k.employee_id = e.id
+       JOIN users m ON k.manager_id = m.id
+       WHERE ${whereClause}
+       ORDER BY k.created_at DESC
+       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+      [...params, parseInt(limit), offset]
+    );
+
+    res.json({ 
+      kpis: result.rows,
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      totalPages: Math.ceil(total / parseInt(limit))
+    });
+  } catch (error) {
+    console.error('Get paginated KPIs error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get KPIs that are acknowledged but don't have reviews yet (for HR and Manager)
 // NOTE: This route must come before /:id to avoid route conflicts
 router.get('/acknowledged-review-pending', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
@@ -145,11 +253,29 @@ router.get('/acknowledged-review-pending', authenticateToken, authorizeRoles('ma
 // This is a "snapshot" list used by management to prove KPI setting was completed.
 // It intentionally does NOT join on kpi_reviews, so once a KPI appears here
 // it will remain even after reviews are started or completed.
-router.get('/setting-completed', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
+router.get('/setting-completed', authenticateToken, authorizeRoles('manager', 'hr', 'employee'), async (req, res) => {
   try {
     let result;
 
-    if (req.user.role === 'manager') {
+    if (req.user.role === 'employee') {
+      // Employees see only their own KPIs
+      result = await query(
+        `SELECT k.*, 
+         e.name as employee_name, e.department as employee_department,
+         e.payroll_number as employee_payroll_number,
+         m.name as manager_name
+         FROM kpis k
+         JOIN users e ON k.employee_id = e.id
+         JOIN users m ON k.manager_id = m.id
+         WHERE k.employee_id = $1 
+           AND k.company_id = $2
+           AND k.status = 'acknowledged'
+           AND k.employee_signature IS NOT NULL
+           AND k.manager_signature IS NOT NULL
+         ORDER BY k.employee_signed_at DESC, k.created_at DESC`,
+        [req.user.id, req.user.company_id]
+      );
+    } else if (req.user.role === 'manager') {
       // Managers see only their team's KPIs
       result = await query(
         `SELECT k.*, 
@@ -210,7 +336,7 @@ router.get('/setting-completed', authenticateToken, authorizeRoles('manager', 'h
 
 // Download PDF for acknowledged KPI
 // NOTE: This route must come before /:id to avoid route conflicts
-router.get('/:kpiId/download-pdf', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
+router.get('/:kpiId/download-pdf', authenticateToken, authorizeRoles('manager', 'hr', 'employee'), async (req, res) => {
   try {
     const { kpiId } = req.params;
 
@@ -244,6 +370,9 @@ router.get('/:kpiId/download-pdf', authenticateToken, authorizeRoles('manager', 
     const kpi = kpiResult.rows[0];
 
     // Verify access
+    if (req.user.role === 'employee' && kpi.employee_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
     if (req.user.role === 'manager' && kpi.manager_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
@@ -325,7 +454,7 @@ router.get('/:kpiId/download-pdf', authenticateToken, authorizeRoles('manager', 
 
 // Download PDF for completed review
 // NOTE: This route must come before /:id to avoid route conflicts
-router.get('/:kpiId/review-download-pdf', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
+router.get('/:kpiId/review-download-pdf', authenticateToken, authorizeRoles('manager', 'hr', 'employee'), async (req, res) => {
   try {
     const { kpiId } = req.params;
 
@@ -355,6 +484,9 @@ router.get('/:kpiId/review-download-pdf', authenticateToken, authorizeRoles('man
     const kpi = kpiResult.rows[0];
 
     // Verify access
+    if (req.user.role === 'employee' && kpi.employee_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
     if (req.user.role === 'manager' && kpi.manager_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
@@ -434,11 +566,35 @@ router.get('/:kpiId/review-download-pdf', authenticateToken, authorizeRoles('man
 
 // Get KPIs with completed reviews (for HR and Manager)
 // NOTE: This route must come before /:id to avoid route conflicts
-router.get('/review-completed', authenticateToken, authorizeRoles('manager', 'hr'), async (req, res) => {
+router.get('/review-completed', authenticateToken, authorizeRoles('manager', 'hr', 'employee'), async (req, res) => {
   try {
     let result;
     
-    if (req.user.role === 'manager') {
+    if (req.user.role === 'employee') {
+      // Employees see only their own KPIs with completed reviews
+      result = await query(
+        `SELECT k.*, 
+         e.name as employee_name, e.department as employee_department,
+         e.payroll_number as employee_payroll_number,
+         m.name as manager_name,
+         kr.id as review_id,
+         kr.review_status,
+         kr.manager_rating,
+         kr.employee_rating,
+         kr.manager_signed_at,
+         kr.pdf_generated,
+         kr.pdf_path
+         FROM kpis k
+         JOIN users e ON k.employee_id = e.id
+         JOIN users m ON k.manager_id = m.id
+         JOIN kpi_reviews kr ON k.id = kr.kpi_id AND kr.company_id = k.company_id
+         WHERE k.employee_id = $1 
+           AND k.company_id = $2
+           AND (kr.review_status = 'manager_submitted' OR kr.review_status = 'completed')
+         ORDER BY COALESCE(kr.manager_signed_at, kr.updated_at) DESC, kr.updated_at DESC`,
+        [req.user.id, req.user.company_id]
+      );
+    } else if (req.user.role === 'manager') {
       // Managers see only their team's KPIs with completed reviews
       result = await query(
         `SELECT k.*, 

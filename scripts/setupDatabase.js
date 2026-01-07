@@ -201,6 +201,32 @@ async function setupDatabase() {
       console.log('⚠️  Migration error (may be okay if constraint already removed):', error.message);
     }
 
+    // Execute migration to optimize for large datasets if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_optimize_for_large_datasets.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running large dataset optimization migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Large dataset optimization migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if indexes already exist):', error.message);
+    }
+
+    // Execute migration for employee password system if it exists
+    try {
+      const migrationPath = path.join(__dirname, '../database/migration_employee_password_system.sql');
+      if (fs.existsSync(migrationPath)) {
+        console.log('📦 Running employee password system migration...');
+        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        await pool.query(migrationSQL);
+        console.log('✅ Employee password system migration executed successfully!');
+      }
+    } catch (error) {
+      console.log('⚠️  Migration error (may be okay if column already exists):', error.message);
+    }
+
     // Seed Power Automate URLs (always run - these are configuration, not sample data)
     try {
       console.log('🔗 Seeding Power Automate webhook URLs...');

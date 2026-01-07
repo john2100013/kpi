@@ -5,16 +5,23 @@ const { query } = require('../database/db');
 const { authenticateToken } = require('../middleware/auth');
 const router = express.Router();
 
-// Login endpoint - supports both methods
+// Login endpoint - supports email+password or payroll+password
 router.post('/login', async (req, res) => {
   try {
-    const { email, password, payrollNumber, nationalId } = req.body;
+    const { email, password, payrollNumber, loginMethod } = req.body;
 
     let user;
     let result;
 
-    // Method 1: Email + Password (for admin/initial setup)
-    if (email && password) {
+    // Determine login method based on loginMethod parameter or provided fields
+    const method = loginMethod || (email ? 'email' : 'payroll');
+
+    if (method === 'email') {
+      // Email + Password login
+      if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password are required' });
+      }
+
       result = await query(
         'SELECT * FROM users WHERE email = $1',
         [email]
@@ -31,30 +38,31 @@ router.post('/login', async (req, res) => {
       if (!validPassword) {
         return res.status(401).json({ error: 'Invalid email or password' });
       }
-    }
-    // Method 2: Payroll Number + National ID (for employees/managers)
-    else if (payrollNumber && nationalId) {
+    } else if (method === 'payroll') {
+      // Payroll Number + Password login
+      if (!payrollNumber || !password) {
+        return res.status(400).json({ error: 'Payroll number and password are required' });
+      }
+
       result = await query(
-        'SELECT * FROM users WHERE payroll_number = $1 AND national_id = $2',
-        [payrollNumber, nationalId]
+        'SELECT * FROM users WHERE payroll_number = $1',
+        [payrollNumber]
       );
 
       if (result.rows.length === 0) {
-        return res.status(401).json({ error: 'Invalid credentials' });
+        return res.status(401).json({ error: 'Invalid payroll number or password' });
       }
 
       user = result.rows[0];
 
-      // If password is provided, verify it
-      if (password) {
-        const validPassword = await bcrypt.compare(password, user.password_hash);
-        if (!validPassword) {
-          return res.status(401).json({ error: 'Invalid credentials' });
-        }
+      // Verify password
+      const validPassword = await bcrypt.compare(password, user.password_hash);
+      if (!validPassword) {
+        return res.status(401).json({ error: 'Invalid payroll number or password' });
       }
     } else {
       return res.status(400).json({ 
-        error: 'Either (email + password) or (payroll number + national ID) is required' 
+        error: 'Invalid login method' 
       });
     }
 
@@ -102,6 +110,7 @@ router.post('/login', async (req, res) => {
       },
       companies: userCompanies,
       hasMultipleCompanies: userCompanies.length > 1,
+      passwordChangeRequired: user.password_change_required || false,
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -298,16 +307,11 @@ router.put('/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Change password (for HR, Manager, and Super Admin only)
+// Change password (for all authenticated users)
 router.put('/change-password', authenticateToken, async (req, res) => {
   try {
     const { oldPassword, newPassword, confirmPassword } = req.body;
     const userId = req.user.id;
-
-    // Validate role - only HR, Manager, and Super Admin can change passwords
-    if (!['hr', 'manager', 'super_admin'].includes(req.user.role)) {
-      return res.status(403).json({ error: 'Password change is only available for HR, Manager, and Super Admin roles' });
-    }
 
     // Validate input
     if (!oldPassword || !newPassword || !confirmPassword) {
@@ -355,9 +359,9 @@ router.put('/change-password', authenticateToken, async (req, res) => {
     const saltRounds = 10;
     const newPasswordHash = await bcrypt.hash(newPassword, saltRounds);
 
-    // Update password
+    // Update password and clear password_change_required flag
     await query(
-      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      'UPDATE users SET password_hash = $1, password_change_required = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
       [newPasswordHash, userId]
     );
 
