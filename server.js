@@ -1,7 +1,14 @@
-const express = require('express');
-const cors = require('cors');
-const { startSchedulers } = require('./services/schedulerService');
-require('dotenv').config();
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { startSchedulers } from './services/schedulerService.js';
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -61,22 +68,36 @@ app.use('/api/rating-options', (req, res, next) => {
 });
 
 // Routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/companies', require('./routes/companies'));
-app.use('/api/employees', require('./routes/employees'));
-app.use('/api/users', require('./routes/users'));
-app.use('/api/kpis', require('./routes/kpis'));
-app.use('/api/kpi-acknowledgement', require('./routes/kpiAcknowledgement'));
-app.use('/api/kpi-review', require('./routes/kpiReview'));
-app.use('/api/notifications', require('./routes/notifications'));
-app.use('/api/settings', require('./routes/settings'));
-app.use('/api/departments', require('./routes/departments'));
-app.use('/api/email-templates', require('./routes/emailTemplates'));
-app.use('/api/meetings', require('./routes/meetings'));
-app.use('/api/power-automate', require('./routes/powerAutomate'));
-app.use('/api/kpi-templates', require('./routes/kpiTemplates'));
-// Register rating options routes
-const ratingOptionsRouter = require('./routes/ratingOptions');
+import authRouter from './routes/auth.js';
+import companiesRouter from './routes/companies.js';
+import employeesRouter from './routes/employees.js';
+import usersRouter from './routes/users.js';
+import kpisRouter from './routes/kpis.js';
+import kpiAcknowledgementRouter from './routes/kpiAcknowledgement.js';
+import kpiReviewRouter from './routes/kpiReview.js';
+import notificationsRouter from './routes/notifications.js';
+import settingsRouter from './routes/settings.js';
+import departmentsRouter from './routes/departments.js';
+import emailTemplatesRouter from './routes/emailTemplates.js';
+import meetingsRouter from './routes/meetings.js';
+import powerAutomateRouter from './routes/powerAutomate.js';
+import kpiTemplatesRouter from './routes/kpiTemplates.js';
+import ratingOptionsRouter from './routes/ratingOptions.js';
+
+app.use('/api/auth', authRouter);
+app.use('/api/companies', companiesRouter);
+app.use('/api/employees', employeesRouter);
+app.use('/api/users', usersRouter);
+app.use('/api/kpis', kpisRouter);
+app.use('/api/kpi-acknowledgement', kpiAcknowledgementRouter);
+app.use('/api/kpi-review', kpiReviewRouter);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/settings', settingsRouter);
+app.use('/api/departments', departmentsRouter);
+app.use('/api/email-templates', emailTemplatesRouter);
+app.use('/api/meetings', meetingsRouter);
+app.use('/api/power-automate', powerAutomateRouter);
+app.use('/api/kpi-templates', kpiTemplatesRouter);
 app.use('/api/rating-options', ratingOptionsRouter);
 
 // Debug: Log registered routes after registration
@@ -115,21 +136,12 @@ app.listen(PORT, () => {
   console.log(`📡 Rating options POST route: /api/rating-options (POST)`);
   console.log(`📡 Rating options PUT route: /api/rating-options/:id (PUT)`);
   console.log(`📡 Rating options DELETE route: /api/rating-options/:id (DELETE)`);
-  
-  // Verify rating options routes are loaded
-  try {
-    const ratingOptionsRouter = require('./routes/ratingOptions');
-    console.log('✅ Rating options router loaded successfully');
-    console.log('✅ Router type:', typeof ratingOptionsRouter);
-  } catch (error) {
-    console.error('❌ Failed to load rating options router:', error);
-  }
-  
+  console.log('✅ Rating options router loaded successfully');
   console.log('═══════════════════════════════════════════════════════════');
   
   // Start schedulers
   startSchedulers();
 });
 
-module.exports = app;
+export default app;
 

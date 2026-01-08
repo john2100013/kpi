@@ -1,6 +1,8 @@
-const axios = require('axios');
-const { query } = require('../database/db');
-require('dotenv').config();
+import axios from 'axios';
+import { query } from '../database/db.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 /**
  * Send email via Microsoft Power Automate
@@ -183,7 +185,7 @@ const sendTemplatedEmail = async (companyId, to, templateType, variables = {}, a
   }
 };
 
-module.exports = {
+export {
   sendEmailViaPowerAutomate,
   getEmailTemplate,
   renderTemplate,

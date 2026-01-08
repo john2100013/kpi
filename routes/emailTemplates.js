@@ -1,6 +1,6 @@
-const express = require('express');
-const { query } = require('../database/db');
-const { authenticateToken, authorizeRoles } = require('../middleware/auth');
+import express from 'express';
+import { query } from '../database/db.js';
+import { authenticateToken, authorizeRoles } from '../middleware/auth.js';
 const router = express.Router();
 
 // Get all email templates for the company (HR only)
@@ -213,5 +213,5 @@ router.delete('/:id', authenticateToken, authorizeRoles('hr'), async (req, res) 
   }
 });
 
-module.exports = router;
+export default router;
 

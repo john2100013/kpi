@@ -1,6 +1,10 @@
-const PDFDocument = require('pdfkit');
-const fs = require('fs');
-const path = require('path');
+import PDFDocument from 'pdfkit';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Helper function to convert base64 image to buffer
 const base64ToBuffer = (base64String) => {
@@ -942,5 +946,5 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
   });
 };
 
-module.exports = { generateKPIReviewPDF, generateAcknowledgedKPIPDF, generateCompletedReviewPDF };
+export { generateKPIReviewPDF, generateAcknowledgedKPIPDF, generateCompletedReviewPDF };
 

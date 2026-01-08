@@ -1,7 +1,7 @@
-const express = require('express');
-const { query } = require('../database/db');
-const { authenticateToken } = require('../middleware/auth');
-const { sendEmailWithFallback, emailTemplates, shouldSendHRNotification, getHREmails } = require('../services/emailService');
+import express from 'express';
+import { query } from '../database/db.js';
+import { authenticateToken } from '../middleware/auth.js';
+import { sendEmailWithFallback, emailTemplates, shouldSendHRNotification, getHREmails } from '../services/emailService.js';
 const router = express.Router();
 
 // Acknowledge KPI (Employee)
@@ -127,5 +127,5 @@ router.post('/:kpiId', authenticateToken, async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;
 

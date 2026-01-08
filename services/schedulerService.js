@@ -1,7 +1,9 @@
-const cron = require('node-cron');
-const { query } = require('../database/db');
-const { sendEmailWithFallback, shouldSendHRNotification, getHREmails } = require('./emailService');
-require('dotenv').config();
+import cron from 'node-cron';
+import { query } from '../database/db.js';
+import { sendEmailWithFallback, shouldSendHRNotification, getHREmails } from './emailService.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
@@ -575,4 +577,4 @@ const startSchedulers = () => {
   console.log('✅ Schedulers started');
 };
 
-module.exports = { startSchedulers };
+export { startSchedulers };

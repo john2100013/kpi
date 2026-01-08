@@ -1,7 +1,9 @@
-const nodemailer = require('nodemailer');
-const { sendTemplatedEmail } = require('./powerAutomateService');
-const { query } = require('../database/db');
-require('dotenv').config();
+import nodemailer from 'nodemailer';
+import { sendTemplatedEmail } from './powerAutomateService.js';
+import { query } from '../database/db.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 // Create transporter only if email credentials are provided
 let transporter = null;
@@ -451,7 +453,7 @@ const emailTemplates = {
   },
 };
 
-module.exports = { 
+export { 
   sendEmail, 
   sendEmailWithFallback,
   emailTemplates,
