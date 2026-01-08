@@ -1,18 +1,7 @@
-const bcrypt = require('bcryptjs');
-const { Pool } = require('pg');
-require('dotenv').config();
+import bcrypt from 'bcryptjs';
+import { createPool } from '../config/database.js';
 
-// Handle database name with or without quotes
-let dbName = process.env.DB_NAME || 'kpi_management';
-dbName = dbName.replace(/^["']|["']$/g, '');
-
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: dbName,
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-});
+const pool = createPool();
 
 async function createSuperAdmin() {
   try {

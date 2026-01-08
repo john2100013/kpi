@@ -1,13 +1,9 @@
-const { Pool } = require('pg');
-require('dotenv').config();
+import pg from 'pg';
+import { createPool } from '../config/database.js';
 
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'kpi_management',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-});
+const { Pool } = pg;
+
+const pool = createPool();
 
 // Test connection
 pool.on('connect', () => {
@@ -20,7 +16,7 @@ pool.on('error', (err) => {
 });
 
 // Helper function to execute queries
-const query = async (text, params) => {
+export const query = async (text, params) => {
   const start = Date.now();
   try {
     const res = await pool.query(text, params);
@@ -33,5 +29,7 @@ const query = async (text, params) => {
   }
 };
 
-module.exports = { pool, query };
+export { pool };
+
+export default { pool, query };
 

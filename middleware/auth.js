@@ -1,7 +1,7 @@
-const jwt = require('jsonwebtoken');
-const { query } = require('../database/db');
+import jwt from 'jsonwebtoken';
+import { query } from '../database/db.js';
 
-const authenticateToken = async (req, res, next) => {
+export const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
@@ -86,7 +86,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-const authorizeRoles = (...roles) => {
+export const authorizeRoles = (...roles) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Authentication required' });
@@ -100,5 +100,5 @@ const authorizeRoles = (...roles) => {
   };
 };
 
-module.exports = { authenticateToken, authorizeRoles };
+export default { authenticateToken, authorizeRoles };
 

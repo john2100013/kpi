@@ -711,12 +711,36 @@ const generateCompletedReviewPDF = async (kpiData, kpiItems, reviewData, employe
           xPos = tableLeft + 3;
           doc.fontSize(8).font('Helvetica');
           
+          // Handle qualitative items differently
+          let empRatingDisplay = 'N/A';
+          let mgrRatingDisplay = 'N/A';
+          
+          if (item.is_qualitative) {
+            // Qualitative items: no employee rating, show qualitative manager rating
+            empRatingDisplay = 'Qualitative';
+            if (item.qualitative_rating) {
+              const qualRatingMap = {
+                'exceeds': 'Exceeds Expectations',
+                'meets': 'Meets Expectations',
+                'needs_improvement': 'Needs Improvement'
+              };
+              mgrRatingDisplay = qualRatingMap[item.qualitative_rating] || item.qualitative_rating;
+            }
+          } else {
+            // Quantitative items: show numeric ratings
+            empRatingDisplay = empRating > 0 ? empRating.toFixed(2) : 'N/A';
+            mgrRatingDisplay = mgrRating > 0 ? mgrRating.toFixed(2) : 'N/A';
+          }
+          
+          // Use qualitative_comment for qualitative items
+          const mgrCommentToShow = item.is_qualitative && item.qualitative_comment ? item.qualitative_comment : mgrComment;
+          
           const rowData2 = [
             String(index + 1),
-            empRating > 0 ? empRating.toFixed(2) : 'N/A',
+            empRatingDisplay,
             empComment || 'N/A',
-            mgrRating > 0 ? mgrRating.toFixed(2) : 'N/A',
-            mgrComment || 'N/A'
+            mgrRatingDisplay,
+            mgrCommentToShow || 'N/A'
           ];
           
           // Calculate dynamic row height based on text content (especially comments)

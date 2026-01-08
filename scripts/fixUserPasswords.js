@@ -1,6 +1,5 @@
-const { query, pool } = require('../database/db');
-const bcrypt = require('bcryptjs');
-require('dotenv').config();
+import bcrypt from 'bcryptjs';
+import { query, pool } from '../database/db.js';
 
 // Proper bcrypt hash for 'password123'
 const passwordHash = '$2a$10$8Pio3SlGOHzEDRyBUyYE2OkFn7P/iJG9R69UUVxv7wHvZyrfOYjmC';

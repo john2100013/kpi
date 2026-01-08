@@ -1,20 +1,12 @@
-const { Pool } = require('pg');
-const fs = require('fs');
-const path = require('path');
-require('dotenv').config();
+import { createPool } from '../config/database.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// Handle database name with or without quotes
-let dbName = process.env.DB_NAME || 'kpi_management';
-// Remove quotes if present (pg handles it)
-dbName = dbName.replace(/^["']|["']$/g, '');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: dbName,
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-});
+const pool = createPool();
 
 async function setupDatabase() {
   try {
