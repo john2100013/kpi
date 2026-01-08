@@ -15,11 +15,15 @@ router.get('/statistics', authenticateToken, authorizeRoles('hr', 'manager'), as
     let paramIndex = 2; // Start at 2 because $1 is company_id
     const params = [req.user.company_id];
 
-    // Add manager filter (for HR viewing specific manager's departments)
+    // Add manager filter - managers only see their own department
     if (req.user.role === 'manager') {
-      filters.push(`u.manager_id = $${paramIndex}`);
-      params.push(req.user.id);
-      paramIndex++;
+      // Get manager's department from their user record
+      const managerResult = await query('SELECT department FROM users WHERE id = $1', [req.user.id]);
+      if (managerResult.rows.length > 0 && managerResult.rows[0].department) {
+        filters.push(`u.department = $${paramIndex}`);
+        params.push(managerResult.rows[0].department);
+        paramIndex++;
+      }
     } else if (manager && manager !== '') {
       filters.push(`u.manager_id = $${paramIndex}`);
       params.push(parseInt(manager));
@@ -138,11 +142,17 @@ router.get('/statistics/:department/:category', authenticateToken, authorizeRole
       return res.status(400).json({ error: 'Invalid category' });
     }
 
-    // Build optimized query with proper indexing
-    const managerCondition = req.user.role === 'manager' ? 'AND u.manager_id = $3' : '';
-    const params = req.user.role === 'manager' 
-      ? [req.user.company_id, department, req.user.id]
-      : [req.user.company_id, department];
+    // Build optimized query - managers can only view their own department
+    let managerCondition = '';
+    let params = [req.user.company_id, department];
+    
+    if (req.user.role === 'manager') {
+      // Verify the requested department matches manager's department
+      const managerResult = await query('SELECT department FROM users WHERE id = $1', [req.user.id]);
+      if (managerResult.rows.length === 0 || managerResult.rows[0].department !== department) {
+        return res.status(403).json({ error: 'You can only view your own department' });
+      }
+    }
 
     // Single optimized query to get employees in category with all details
     const employeesQuery = `
@@ -185,7 +195,6 @@ router.get('/statistics/:department/:category', authenticateToken, authorizeRole
         WHERE u.company_id = $1 
           AND u.department = $2
           AND u.role = 'employee'
-          ${managerCondition}
       )
       SELECT 
         id, name, email, payroll_number, department, position, 

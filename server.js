@@ -74,6 +74,7 @@ app.use('/api/departments', require('./routes/departments'));
 app.use('/api/email-templates', require('./routes/emailTemplates'));
 app.use('/api/meetings', require('./routes/meetings'));
 app.use('/api/power-automate', require('./routes/powerAutomate'));
+app.use('/api/kpi-templates', require('./routes/kpiTemplates'));
 // Register rating options routes
 const ratingOptionsRouter = require('./routes/ratingOptions');
 app.use('/api/rating-options', ratingOptionsRouter);
