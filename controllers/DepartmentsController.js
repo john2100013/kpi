@@ -84,12 +84,14 @@ class DepartmentsController extends BaseController {
         SELECT 
           COALESCE(u.department, 'Unassigned') as department,
           COUNT(DISTINCT u.id) as total_employees,
-          COUNT(DISTINCT CASE WHEN lk.kpi_status = 'pending' THEN u.id END) as pending_setting,
-          COUNT(DISTINCT CASE WHEN lk.kpi_status = 'acknowledged' AND lk.review_id IS NULL THEN u.id END) as pending_self_rating,
-          COUNT(DISTINCT CASE WHEN lk.review_status = 'employee_submitted' THEN u.id END) as pending_manager_review,
-          COUNT(DISTINCT CASE WHEN lk.review_status IN ('manager_submitted', 'completed') THEN u.id END) as completed,
-          COUNT(DISTINCT CASE WHEN lk.review_status = 'rejected' AND lk.rejection_resolved_status != 'resolved' THEN u.id END) as rejected_pending,
-          COUNT(DISTINCT CASE WHEN lk.kpi_id IS NULL THEN u.id END) as not_started
+          COUNT(DISTINCT CASE WHEN lk.kpi_status = 'pending' THEN u.id END) as pending,
+          COUNT(DISTINCT CASE WHEN lk.kpi_status = 'acknowledged' AND lk.review_id IS NULL THEN u.id END) as acknowledged_review_pending,
+          COUNT(DISTINCT CASE WHEN lk.review_status = 'employee_submitted' THEN u.id END) as self_rating_submitted,
+          COUNT(DISTINCT CASE WHEN lk.review_status = 'manager_submitted' THEN u.id END) as awaiting_employee_confirmation,
+          COUNT(DISTINCT CASE WHEN lk.review_status = 'completed' THEN u.id END) as review_completed,
+          COUNT(DISTINCT CASE WHEN lk.review_status = 'rejected' AND lk.rejection_resolved_status != 'resolved' THEN u.id END) as review_rejected,
+          COUNT(DISTINCT CASE WHEN lk.review_id IS NOT NULL AND lk.review_status NOT IN ('completed', 'rejected', 'employee_submitted', 'manager_submitted') THEN u.id END) as review_pending,
+          COUNT(DISTINCT CASE WHEN lk.kpi_id IS NULL THEN u.id END) as no_kpi
         FROM users u
         LEFT JOIN latest_kpis lk ON u.id = lk.employee_id
         WHERE u.role = 'employee' AND u.company_id = $1
@@ -99,7 +101,24 @@ class DepartmentsController extends BaseController {
       `;
 
       const result = await query(statsQuery, params);
-      return this.success(res, { statistics: result.rows });
+      
+      // Transform the flat structure into the expected nested structure
+      const statistics = result.rows.map(row => ({
+        department: row.department,
+        total_employees: parseInt(row.total_employees),
+        categories: {
+          pending: parseInt(row.pending),
+          acknowledged_review_pending: parseInt(row.acknowledged_review_pending),
+          self_rating_submitted: parseInt(row.self_rating_submitted),
+          awaiting_employee_confirmation: parseInt(row.awaiting_employee_confirmation),
+          review_completed: parseInt(row.review_completed),
+          review_rejected: parseInt(row.review_rejected),
+          review_pending: parseInt(row.review_pending),
+          no_kpi: parseInt(row.no_kpi)
+        }
+      }));
+      
+      return this.success(res, { statistics });
     } catch (error) {
       console.error('Get department statistics error:', error);
       return this.error(res, 'Internal server error');

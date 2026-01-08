@@ -173,7 +173,16 @@ class KpiReviewController extends BaseController {
   // Submit employee self-rating
   async submitSelfRating(req, res) {
     const { kpiId } = req.params;
-    const { employee_rating, employee_comment, employee_signature, review_period, review_quarter, review_year } = req.body;
+    const { 
+      employee_rating, 
+      employee_comment, 
+      employee_signature, 
+      review_period, 
+      review_quarter, 
+      review_year,
+      major_accomplishments,
+      disappointments
+    } = req.body;
 
     if (!employee_rating || !employee_signature) {
       return this.validationError(res, 'Employee rating and signature are required');
@@ -213,8 +222,9 @@ class KpiReviewController extends BaseController {
       const insertResult = await query(
         `INSERT INTO kpi_reviews (
           kpi_id, employee_id, manager_id, company_id, review_period, review_quarter, review_year,
-          employee_rating, employee_comment, employee_signature, employee_signed_at, review_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), 'employee_submitted')
+          employee_rating, employee_comment, employee_signature, employee_signed_at, review_status,
+          major_accomplishments, disappointments
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), 'employee_submitted', $11, $12)
         RETURNING *`,
         [
           kpiId,
@@ -227,6 +237,8 @@ class KpiReviewController extends BaseController {
           employee_rating,
           employee_comment,
           employee_signature,
+          major_accomplishments,
+          disappointments,
         ]
       );
       review = insertResult.rows[0];
@@ -235,10 +247,11 @@ class KpiReviewController extends BaseController {
       const updateResult = await query(
         `UPDATE kpi_reviews 
          SET employee_rating = $1, employee_comment = $2, employee_signature = $3,
-         employee_signed_at = NOW(), review_status = 'employee_submitted', updated_at = NOW()
+         employee_signed_at = NOW(), review_status = 'employee_submitted', updated_at = NOW(),
+         major_accomplishments = $5, disappointments = $6
          WHERE kpi_id = $4
          RETURNING *`,
-        [employee_rating, employee_comment, employee_signature, kpiId]
+        [employee_rating, employee_comment, employee_signature, kpiId, major_accomplishments, disappointments]
       );
       review = updateResult.rows[0];
     }
@@ -320,7 +333,15 @@ class KpiReviewController extends BaseController {
   // Submit manager review
   async submitManagerReview(req, res) {
     const { reviewId } = req.params;
-    const { manager_rating, manager_comment, overall_manager_comment, manager_signature, qualitative_ratings } = req.body;
+    const { 
+      manager_rating, 
+      manager_comment, 
+      overall_manager_comment, 
+      manager_signature, 
+      qualitative_ratings,
+      major_accomplishments_manager_comment,
+      disappointments_manager_comment
+    } = req.body;
 
     if (!manager_rating || !manager_signature) {
       return this.validationError(res, 'Manager rating and signature are required');
@@ -368,10 +389,12 @@ class KpiReviewController extends BaseController {
     const updateResult = await query(
       `UPDATE kpi_reviews 
        SET manager_rating = $1, manager_comment = $2, overall_manager_comment = $3,
-       manager_signature = $4, manager_signed_at = NOW(), review_status = 'awaiting_employee_confirmation', updated_at = NOW()
+       manager_signature = $4, manager_signed_at = NOW(), review_status = 'awaiting_employee_confirmation', 
+       updated_at = NOW(), major_accomplishments_manager_comment = $6, disappointments_manager_comment = $7
        WHERE id = $5
        RETURNING *`,
-      [manager_rating, manager_comment, overall_manager_comment, manager_signature, reviewId]
+      [manager_rating, manager_comment, overall_manager_comment, manager_signature, reviewId, 
+       major_accomplishments_manager_comment, disappointments_manager_comment]
     );
 
     const updatedReview = updateResult.rows[0];

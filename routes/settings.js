@@ -15,8 +15,8 @@ router.post('/period-settings', authenticateToken, authorizeRoles('hr'), Setting
 // Delete period setting
 router.delete('/period-settings/:id', authenticateToken, authorizeRoles('hr'), SettingsController.asyncHandler(SettingsController.deletePeriodSetting.bind(SettingsController)));
 
-// Get available KPI periods for managers/employees (active periods only)
-router.get('/available-periods', authenticateToken, authorizeRoles('manager', 'employee'), SettingsController.asyncHandler(SettingsController.getAvailablePeriods.bind(SettingsController)));
+// Get available KPI periods for managers/employees/hr (active periods only)
+router.get('/available-periods', authenticateToken, authorizeRoles('manager', 'employee', 'hr'), SettingsController.asyncHandler(SettingsController.getAvailablePeriods.bind(SettingsController)));
 
 // ========== Reminder Settings ==========
 
